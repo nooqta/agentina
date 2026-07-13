@@ -1,3 +1,5 @@
 export { AgentinaNode, type AgentinaNodeOptions } from "./node"
 export { NodeState, newId, type NodeStateShape } from "./state"
 export { EchoAdapter, type AgentAdapter, type AdapterTask } from "./adapter"
+export { ScopedFsAdapter } from "./adapters/scoped-fs"
+export { ClaudeCodeAdapter } from "./adapters/claude-code"

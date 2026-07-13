@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
 import type {
-  AgentCard, Party, PartyKind,
+  AgentCard, Party, PartyKind, Scope, AgentOffer,
   InvitePayload, PairCompleteRequest, PairCompleteResponse, PingResponse,
 } from "@agentina-mesh/protocol"
 import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
-import { decideAuth, CredentialStore, mintToken, JsonlAuditLog } from "@agentina-mesh/grants"
+import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant } from "@agentina-mesh/grants"
 import { NodeState } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
 
@@ -41,8 +41,10 @@ export class AgentinaNode {
   readonly state: NodeState
   readonly audit: JsonlAuditLog
   readonly credentials: CredentialStore
+  readonly grants: GrantStore
   readonly mesh: Mesh
   private adapter: AgentAdapter
+  private adapters = new Map<string, AgentAdapter>()
   private server?: Server
   private log: (...args: unknown[]) => void
   private trustLoopback: boolean
@@ -61,6 +63,10 @@ export class AgentinaNode {
     this.audit = new JsonlAuditLog(this.state.auditPath())
     this.credentials = new CredentialStore(this.state.data.credentials, (all) => {
       this.state.data.credentials = all
+      this.state.save()
+    })
+    this.grants = new GrantStore(this.state.data.grants, (all) => {
+      this.state.data.grants = all
       this.state.save()
     })
     this.adapter = opts.adapter ?? new EchoAdapter()
@@ -176,6 +182,33 @@ export class AgentinaNode {
     return this.mesh.sendTask(peerName, message, agentId, { senderAgentId: undefined })
   }
 
+  /** Register (or replace) an agent offer, optionally with its own
+   *  adapter. Offers without a dedicated adapter fall back to the
+   *  node-level default. */
+  addAgent(offer: AgentOffer, adapter?: AgentAdapter): void {
+    const agents = this.state.data.agents
+    const idx = agents.findIndex((a) => a.id === offer.id)
+    if (idx >= 0) agents[idx] = offer
+    else agents.push(offer)
+    this.state.save()
+    if (adapter) this.adapters.set(offer.id, adapter)
+  }
+
+  /** Owner-authored grant to a paired party (active immediately).
+   *  `toParty` accepts a party id or a peer name. */
+  grantAccess(toParty: string, agentIds: string[], scopes: Scope[], expiresAt?: string) {
+    const partyId = this.resolvePartyId(toParty)
+    if (!partyId) throw new Error(`Unknown party or peer: ${toParty}`)
+    const grant = this.grants.create({ fromParty: this.party.id, toParty: partyId, agentIds, scopes, expiresAt })
+    this.audit.append({ kind: "grant-create", decision: "allowed", partyId, grantId: grant.id, scopes, detail: `agents: ${agentIds.join(", ")}` })
+    return grant
+  }
+
+  private resolvePartyId(nameOrId: string): string | undefined {
+    if (nameOrId.startsWith("pt_")) return nameOrId
+    return this.state.data.peers.find((p) => p.name === nameOrId)?.partyId
+  }
+
   private upsertPeer(peer: PeerRef): void {
     const peers = this.state.data.peers
     const idx = peers.findIndex((p) => p.name === peer.name)
@@ -234,15 +267,61 @@ export class AgentinaNode {
           this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId, reason: "unknown-agent" })
           return this.json(res, 404, { error: `Unknown agent: ${agentId}` })
         }
-        // M1 inserts enforceGrant() here: callerParty → allowed agentIds + scopes.
-        const result = await this.adapter.execute(offer, {
-          message: String(body.message ?? ""),
-          fromPartyId: callerParty,
-          senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
-          context: (body.context as Record<string, unknown>) ?? undefined,
-        })
-        this.audit.append({ kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id })
-        return this.json(res, 200, { content: result.content })
+
+        // Grant enforcement — the security boundary. Pairing alone grants
+        // NOTHING: a remote party needs an active grant covering this agent,
+        // and that grant's scopes become the task's policy (the jail the
+        // adapter enforces as defense-in-depth).
+        let policy: { grantId: string; scopes: Scope[] } | undefined
+        if (callerParty !== "local") {
+          const decision = enforceGrant(this.grants.activeFor(callerParty), offer.id)
+          if (!decision.allowed) {
+            this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, reason: decision.reason })
+            return this.json(res, 403, { error: `Forbidden: ${decision.reason} — ask ${this.party.name} to grant access to agent "${offer.id}"` })
+          }
+          policy = { grantId: decision.grant.id, scopes: decision.grant.scopes }
+        }
+
+        const adapter = this.adapters.get(offer.id) ?? this.adapter
+        try {
+          const result = await adapter.execute(offer, {
+            message: String(body.message ?? ""),
+            fromPartyId: callerParty,
+            policy,
+            senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
+            context: (body.context as Record<string, unknown>) ?? undefined,
+          })
+          this.audit.append({ kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id, grantId: policy?.grantId, scopes: policy?.scopes })
+          return this.json(res, 200, { content: result.content })
+        } catch (e: any) {
+          // Scope denials from the adapter are policy decisions, not crashes —
+          // audit them as denied tasks and surface the reason.
+          const msg = String(e?.message || e)
+          const isDenial = msg.startsWith("denied:")
+          this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: policy?.grantId, reason: isDenial ? "scope-denied" : "adapter-error", detail: msg.slice(0, 200) })
+          return this.json(res, isDenial ? 403 : 500, { error: msg })
+        }
+      }
+
+      // ----- grants: the counterparty-visible surface -----
+      case "GET /agentina/v1/grants": {
+        if (callerParty === "local") return this.json(res, 200, { grants: this.grants.list() })
+        // A party sees exactly what was extended to THEM — nothing else.
+        return this.json(res, 200, { grants: this.grants.activeFor(callerParty) })
+      }
+      case "POST /agentina/v1/grants": {
+        const body = await this.readBody(req)
+        const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : []
+        const scopes = (Array.isArray(body.scopes) ? body.scopes : []) as Scope[]
+        const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined
+        if (callerParty === "local") {
+          const grant = this.grantAccess(String(body.toParty ?? ""), agentIds, scopes, expiresAt)
+          return this.json(res, 201, grant)
+        }
+        // A remote party PROPOSES; the owner approves from their side.
+        const proposed = this.grants.propose({ fromParty: this.party.id, toParty: callerParty, agentIds, scopes, expiresAt })
+        this.audit.append({ kind: "grant-create", decision: "allowed", partyId: callerParty, grantId: proposed.id, reason: "proposed", scopes })
+        return this.json(res, 202, proposed)
       }
 
       // ----- loopback-only control surface (CLI / local console) -----
@@ -256,12 +335,46 @@ export class AgentinaNode {
         const joined = await this.join(String(body.link ?? ""))
         return this.json(res, 200, joined)
       }
+      case "POST /agentina/v1/task": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const peerName = String(body.peer ?? "")
+        // A just-paired peer may not have been health-probed yet — refresh
+        // on demand so the operator's first task doesn't race the timer.
+        const dir = this.mesh.directory().find((p) => p.peer === peerName)
+        if (dir && !dir.healthy) await this.mesh.refreshPeer(peerName)
+        const content = await this.mesh.sendTask(
+          peerName,
+          String(body.message ?? ""),
+          body.agent ? String(body.agent) : undefined,
+        )
+        return this.json(res, 200, { content })
+      }
+
       case "POST /agentina/v1/test": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
         const result = await this.ping(String(body.peer ?? ""))
         return this.json(res, 200, result)
       }
+      case "POST /agentina/v1/grants/approve": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const approved = this.grants.approve(String(body.id ?? ""))
+        if (!approved) return this.json(res, 404, { error: "No proposed grant with that id" })
+        this.audit.append({ kind: "grant-create", decision: "allowed", partyId: approved.toParty, grantId: approved.id, reason: "approved", scopes: approved.scopes })
+        return this.json(res, 200, approved)
+      }
+      case "POST /agentina/v1/grants/revoke": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const id = String(body.id ?? "")
+        const grant = this.grants.get(id)
+        if (!this.grants.revoke(id)) return this.json(res, 404, { error: "No active grant with that id" })
+        this.audit.append({ kind: "grant-revoke", decision: "allowed", partyId: grant?.toParty, grantId: id })
+        return this.json(res, 200, { revoked: id })
+      }
+
       case "GET /agentina/v1/status": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         return this.json(res, 200, {
@@ -270,6 +383,7 @@ export class AgentinaNode {
           protocol: PROTOCOL_VERSION,
           agents: this.state.data.agents.map((a) => a.id),
           peers: this.mesh.directory(),
+          grants: this.grants.list(),
           audit: this.audit.tail(20),
         })
       }

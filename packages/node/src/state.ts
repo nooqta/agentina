@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
-import type { Party, PartyKind, AgentOffer, Credential } from "@agentina-mesh/protocol"
+import type { Party, PartyKind, AgentOffer, Credential, Grant } from "@agentina-mesh/protocol"
 import type { PeerRef } from "@agentina-mesh/peer"
 
 // --- Node state: one JSON file per node ---
@@ -25,6 +25,7 @@ export interface NodeStateShape {
   agents: AgentOffer[]
   peers: PeerRef[]
   credentials: Credential[]
+  grants: Grant[]
   pendingInvites: PendingInvite[]
 }
 
@@ -44,6 +45,7 @@ export class NodeState {
       // The advertised URL follows the current process opts (port may differ
       // from the last run); everything identity-shaped stays as stored.
       this.data.url = init.url
+      this.data.grants ??= [] // pre-M1 state files
     } else {
       const party: Party = { id: newId("pt"), name: init.partyName, kind: init.partyKind ?? "person" }
       this.data = {
@@ -61,6 +63,7 @@ export class NodeState {
         ],
         peers: [],
         credentials: [],
+        grants: [],
         pendingInvites: [],
       }
       this.save()
