@@ -1,0 +1,16 @@
+{
+  "name": "@agentina-mesh/peer",
+  "version": "0.1.0",
+  "description": "The essential unit: A2A client, peer registry with health hysteresis, task exchange, invite codec.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsup src/index.ts --format esm --dts --clean" },
+  "dependencies": {
+    "@agentina-mesh/protocol": "workspace:*",
+    "undici": "^7.2.0"
+  },
+  "license": "MIT"
+}
