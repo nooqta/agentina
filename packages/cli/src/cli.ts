@@ -70,6 +70,8 @@ Usage:
   agentina test <peer> [--port <n>]       authenticated connection test
   agentina task <peer> <message…> [--agent <id>] [--port <n>]
   agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
+  agentina channel telegram --token-env <VAR> [--chats <id,id…>]
+  agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
   agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>] [--expires <ISO>]
   agentina grants [--port <n>]            list grants you have authored (+ proposals)
   agentina approve <grant-id>             approve a counterparty's proposed grant
@@ -147,6 +149,23 @@ async function main(): Promise<void> {
         agent: typeof flags.agent === "string" ? flags.agent : undefined,
       })
       console.log(result.content)
+      return
+    }
+
+    case "channel": {
+      const kind = positional[0]
+      if (kind !== "telegram" && kind !== "gitlab") {
+        throw new Error("Usage: agentina channel telegram|gitlab …")
+      }
+      const body: Record<string, unknown> = { kind, tokenEnv: flags["token-env"] }
+      if (kind === "telegram" && typeof flags.chats === "string") body.allowedChats = flags.chats.split(",")
+      if (kind === "gitlab") {
+        body.host = flags.host
+        if (typeof flags["secret-env"] === "string") body.webhookSecretEnv = flags["secret-env"]
+      }
+      const r = await control(port, "POST", "/agentina/v1/channels", body)
+      console.log(`Configured ${r.configured} — ${r.note}`)
+      if (kind === "gitlab") console.log(`Point the project webhook at: <node-url>/channels/gitlab/webhook (note events)`)
       return
     }
 

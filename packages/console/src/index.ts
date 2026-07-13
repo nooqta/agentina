@@ -65,6 +65,7 @@ export const CONSOLE_HTML = `<!doctype html>
   <span class="chip" id="party-id"></span>
   <span class="chip" id="proto"></span>
   <span class="chip" id="node-url"></span>
+  <span class="chip" id="channels"></span>
 </header>
 <main>
   <section class="card">
@@ -146,6 +147,7 @@ export const CONSOLE_HTML = `<!doctype html>
     $("party-id").textContent = s.party.id;
     $("proto").textContent = s.protocol;
     $("node-url").textContent = s.url;
+    $("channels").textContent = (s.channels && s.channels.length) ? "channels: " + s.channels.join(", ") : "no channels";
     state.peers = s.peers; state.agents = s.agents; state.grants = s.grants || [];
 
     var peersEl = $("peers");

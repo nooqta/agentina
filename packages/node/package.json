@@ -12,7 +12,8 @@
     "@agentina-mesh/protocol": "workspace:*",
     "@agentina-mesh/peer": "workspace:*",
     "@agentina-mesh/grants": "workspace:*",
-    "@agentina-mesh/console": "workspace:*"
+    "@agentina-mesh/console": "workspace:*",
+    "@agentina-mesh/channels": "workspace:*"
   },
   "license": "MIT"
 }

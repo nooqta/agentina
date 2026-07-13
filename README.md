@@ -60,6 +60,24 @@ agentina revoke gr_…                  # ends it instantly
 agentina task "Badis" read brief.txt --agent files
 ```
 
+## Channels — talk to the mesh where you already are
+
+Mention an agent in a comment or a chat and it answers — including agents on the *other side* of a trust boundary. The router resolves `@name` to a local agent or a paired party's skill; cross-boundary tasks carry your party token and **the remote side enforces its grants** — a channel mention never bypasses them. A denial comes back as the reply, honestly, and lands in both audit logs.
+
+```bash
+agentina channel telegram --token-env TG_BOT_TOKEN          # DM the bot, or @files read brief.txt
+agentina channel gitlab --host https://gitlab.example.com --token-env GL_BOT_TOKEN --secret-env GL_HOOK_SECRET
+# point the project webhook (note events) at <node-url>/channels/gitlab/webhook
+```
+
+| Channel | Status | How it listens |
+|---|---|---|
+| Telegram | ✓ | Bot API long-poll — no public IP needed |
+| GitLab | ✓ | webhook on issue/MR comments, replies as the bot |
+| WhatsApp · Discord · Slack · GitHub · Trello · Jira | planned | same `ChannelAdapter` contract — each is one small file |
+
+Every adapter implements the same 4-method contract (`start`, `stop`, `sendReply`, + a name); routing, mention resolution, mesh hops, and grant enforcement are shared and never reimplemented per channel.
+
 ## Packages
 
 | Package | What it is |
@@ -69,6 +87,8 @@ agentina task "Badis" read brief.txt --agent files
 | `@agentina-mesh/peer` | Peer registry, health checks with hysteresis, task exchange, invite codec. |
 | `@agentina-mesh/grants` | Party attribution (`decideAuth`), credentials, audit log. |
 | `@agentina-mesh/node` | The daemon: agent-card, `/task`, pairing handshake, control API. |
+| `@agentina-mesh/console` | The web console each node serves at `/`: pairing, scope picker, grants, live activity. |
+| `@agentina-mesh/channels` | Channel adapters (Telegram, GitLab, …) + the shared mention router. |
 
 ## Roadmap
 

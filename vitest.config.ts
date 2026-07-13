@@ -9,6 +9,7 @@ export default defineConfig({
       "@agentina-mesh/grants": resolve(__dirname, "packages/grants/src/index.ts"),
       "@agentina-mesh/node": resolve(__dirname, "packages/node/src/index.ts"),
       "@agentina-mesh/console": resolve(__dirname, "packages/console/src/index.ts"),
+      "@agentina-mesh/channels": resolve(__dirname, "packages/channels/src/index.ts"),
     },
   },
   test: {

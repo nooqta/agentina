@@ -18,6 +18,13 @@ export interface PendingInvite {
   expiresAt: string
 }
 
+/** Channel configs keep secrets OUT of the state file: tokenEnv names
+ *  the environment variable holding the actual credential. */
+export interface ChannelsConfig {
+  telegram?: { tokenEnv: string; allowedChats?: string[] }
+  gitlab?: { host: string; tokenEnv: string; webhookSecretEnv?: string }
+}
+
 export interface NodeStateShape {
   party: Party
   /** Advertised URL peers use to reach this node. */
@@ -27,6 +34,7 @@ export interface NodeStateShape {
   credentials: Credential[]
   grants: Grant[]
   pendingInvites: PendingInvite[]
+  channels?: ChannelsConfig
 }
 
 export function newId(prefix: string): string {

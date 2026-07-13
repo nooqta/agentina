@@ -16,7 +16,8 @@
       "@agentina-mesh/peer": ["packages/peer/src/index.ts"],
       "@agentina-mesh/grants": ["packages/grants/src/index.ts"],
       "@agentina-mesh/node": ["packages/node/src/index.ts"],
-      "@agentina-mesh/console": ["packages/console/src/index.ts"]
+      "@agentina-mesh/console": ["packages/console/src/index.ts"],
+      "@agentina-mesh/channels": ["packages/channels/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]

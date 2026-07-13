@@ -7,6 +7,7 @@ import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
 import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant } from "@agentina-mesh/grants"
 import { CONSOLE_HTML } from "@agentina-mesh/console"
+import { ChannelRouter, TelegramAdapter, GitLabAdapter, type ChannelHost } from "@agentina-mesh/channels"
 import { NodeState } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
 import { ScopedFsAdapter } from "./adapters/scoped-fs"
@@ -46,6 +47,8 @@ export class AgentinaNode {
   readonly credentials: CredentialStore
   readonly grants: GrantStore
   readonly mesh: Mesh
+  readonly channels: ChannelRouter
+  private gitlabChannel?: GitLabAdapter
   private adapter: AgentAdapter
   private adapters = new Map<string, AgentAdapter>()
   private server?: Server
@@ -77,6 +80,68 @@ export class AgentinaNode {
       { peers: this.state.data.peers, healthCheck: { interval: 30, timeout: 10 } },
       this.log,
     )
+
+    // Channels: where humans talk. The router resolves @mentions to a
+    // local agent or a mesh peer's skill; cross-boundary tasks carry
+    // this party's peer token and the REMOTE side enforces its grants —
+    // a channel mention never bypasses the trust boundary.
+    const host: ChannelHost = {
+      localAgentIds: () => this.state.data.agents.map((a) => a.id),
+      executeLocal: async (agentId, message, context) => {
+        const offer = this.state.data.agents.find((a) => a.id === agentId)
+        if (!offer) throw new Error(`Unknown agent: ${agentId}`)
+        const result = await this.resolveAdapter(offer).execute(offer, {
+          message,
+          fromPartyId: "local", // the owner connected this channel
+          context,
+        })
+        this.audit.append({ kind: "task", decision: "allowed", partyId: "local", agentId, detail: `channel:${String(context.channel)}` })
+        return result.content
+      },
+      peers: () =>
+        this.mesh.directory().map((p) => ({
+          peer: p.peer,
+          healthy: p.healthy,
+          skillIds: p.skills.map((s) => s.id),
+        })),
+      sendToPeer: (peer, agentId, message, context) =>
+        this.mesh.sendTask(peer, message, agentId, { context }),
+      audit: (entry) => this.audit.append(entry),
+      log: this.log,
+    }
+    this.channels = new ChannelRouter(host)
+    this.buildChannelsFromConfig()
+  }
+
+  /** Instantiate adapters declared in state.channels (secrets come from
+   *  the env vars the config names — never from the state file). */
+  private buildChannelsFromConfig(): void {
+    const cfg = this.state.data.channels
+    if (!cfg) return
+    if (cfg.telegram) {
+      const token = process.env[cfg.telegram.tokenEnv]
+      if (token) {
+        this.channels.attach(new TelegramAdapter({ token, allowedChats: cfg.telegram.allowedChats }, this.log))
+      } else {
+        this.log(`[channels] telegram configured but $${cfg.telegram.tokenEnv} is unset — skipped`)
+      }
+    }
+    if (cfg.gitlab) {
+      const token = process.env[cfg.gitlab.tokenEnv]
+      if (token) {
+        this.gitlabChannel = new GitLabAdapter(
+          {
+            host: cfg.gitlab.host,
+            token,
+            webhookSecret: cfg.gitlab.webhookSecretEnv ? process.env[cfg.gitlab.webhookSecretEnv] : undefined,
+          },
+          this.log,
+        )
+        this.channels.attach(this.gitlabChannel)
+      } else {
+        this.log(`[channels] gitlab configured but $${cfg.gitlab.tokenEnv} is unset — skipped`)
+      }
+    }
   }
 
   get party(): Party {
@@ -95,10 +160,18 @@ export class AgentinaNode {
       this.server!.listen(this.port, "127.0.0.1", resolve)
     })
     await this.mesh.start()
+    // Channel startup failures (bad token, unreachable API) must not
+    // kill the node — log and carry on; the mesh still works.
+    try {
+      await this.channels.start()
+    } catch (e: any) {
+      this.log(`[channels] start failed: ${e?.message || e}`)
+    }
     this.log(`node up — party "${this.party.name}" (${this.party.id}) on 127.0.0.1:${this.port}`)
   }
 
   async stop(): Promise<void> {
+    await this.channels.stop()
     await this.mesh.stop()
     await new Promise<void>((resolve) => this.server?.close(() => resolve()))
   }
@@ -260,6 +333,15 @@ export class AgentinaNode {
       return this.handlePairComplete(req, res)
     }
 
+    // Public: GitLab webhook — X-Gitlab-Token is its auth; the adapter
+    // verifies it and returns 401 on mismatch.
+    if (route === "POST /channels/gitlab/webhook") {
+      if (!this.gitlabChannel) return this.json(res, 404, { error: "gitlab channel not configured" })
+      const body = await this.readBody(req)
+      const status = this.gitlabChannel.handleWebhook(req.headers, body)
+      return this.json(res, status, { ok: status < 400 })
+    }
+
     // Everything else requires attribution (party token or loopback).
     const decision = decideAuth({
       remoteAddress: req.socket.remoteAddress ?? "",
@@ -371,6 +453,31 @@ export class AgentinaNode {
         const joined = await this.join(String(body.link ?? ""))
         return this.json(res, 200, joined)
       }
+      case "POST /agentina/v1/channels": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const kind = String(body.kind ?? "")
+        const channels = (this.state.data.channels ??= {})
+        if (kind === "telegram") {
+          if (!body.tokenEnv) return this.json(res, 400, { error: "Missing: tokenEnv" })
+          channels.telegram = {
+            tokenEnv: String(body.tokenEnv),
+            ...(Array.isArray(body.allowedChats) ? { allowedChats: body.allowedChats.map(String) } : {}),
+          }
+        } else if (kind === "gitlab") {
+          if (!body.host || !body.tokenEnv) return this.json(res, 400, { error: "Missing: host, tokenEnv" })
+          channels.gitlab = {
+            host: String(body.host),
+            tokenEnv: String(body.tokenEnv),
+            ...(body.webhookSecretEnv ? { webhookSecretEnv: String(body.webhookSecretEnv) } : {}),
+          }
+        } else {
+          return this.json(res, 400, { error: `Unknown channel kind: ${kind} (telegram | gitlab)` })
+        }
+        this.state.save()
+        return this.json(res, 201, { configured: kind, note: "restart the node to start the channel" })
+      }
+
       case "POST /agentina/v1/agents": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
@@ -440,6 +547,7 @@ export class AgentinaNode {
           agents: this.state.data.agents.map((a) => a.id),
           peers: this.mesh.directory(),
           grants: this.grants.list(),
+          channels: this.channels.channelNames(),
           audit: this.audit.tail(20),
         })
       }

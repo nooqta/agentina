@@ -1,0 +1,15 @@
+{
+  "name": "@agentina-mesh/channels",
+  "version": "0.1.0",
+  "description": "Channel adapters for agentina: mention an agent in Telegram, GitLab, WhatsApp, Discord, Slack… and it answers — across trust boundaries, under grants.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsup src/index.ts --format esm --dts --clean" },
+  "dependencies": {
+    "@agentina-mesh/protocol": "workspace:*"
+  },
+  "license": "MIT"
+}
