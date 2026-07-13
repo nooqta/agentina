@@ -69,6 +69,7 @@ Usage:
   agentina join <link> [--port <n>]       redeem a pairing link from another party
   agentina test <peer> [--port <n>]       authenticated connection test
   agentina task <peer> <message…> [--agent <id>] [--port <n>]
+  agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
   agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>] [--expires <ISO>]
   agentina grants [--port <n>]            list grants you have authored (+ proposals)
   agentina approve <grant-id>             approve a counterparty's proposed grant
@@ -106,7 +107,8 @@ async function main(): Promise<void> {
       })
       await node.start()
       console.log(`agentina node up — party "${node.party.name}" on 127.0.0.1:${port}`)
-      console.log(`Pair another party: agentina invite`)
+      console.log(`Console: http://127.0.0.1:${port}/`)
+      console.log(`Pair another party: agentina invite  (or use the console)`)
       const shutdown = () => { void node.stop().then(() => process.exit(0)) }
       process.on("SIGINT", shutdown)
       process.on("SIGTERM", shutdown)
@@ -145,6 +147,19 @@ async function main(): Promise<void> {
         agent: typeof flags.agent === "string" ? flags.agent : undefined,
       })
       console.log(result.content)
+      return
+    }
+
+    case "offer": {
+      const id = typeof flags.id === "string" ? flags.id : ""
+      if (!id) throw new Error("Usage: agentina offer --id <id> [--adapter scoped-fs --root <dir>]")
+      const kind = typeof flags.adapter === "string" ? flags.adapter : "echo"
+      const offer = await control(port, "POST", "/agentina/v1/agents", {
+        id,
+        name: typeof flags.name === "string" ? flags.name : undefined,
+        adapter: { kind, ...(typeof flags.root === "string" ? { baseRoot: flags.root } : {}) },
+      })
+      console.log(`Offering agent "${offer.id}" (${kind}) — grant a party access to it with: agentina grant --to <peer> --agent ${offer.id}`)
       return
     }
 

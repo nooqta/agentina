@@ -6,8 +6,11 @@ import type {
 import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
 import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant } from "@agentina-mesh/grants"
+import { CONSOLE_HTML } from "@agentina-mesh/console"
 import { NodeState } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
+import { ScopedFsAdapter } from "./adapters/scoped-fs"
+import { ClaudeCodeAdapter } from "./adapters/claude-code"
 
 // --- AgentinaNode: one party's node ---
 //
@@ -209,6 +212,29 @@ export class AgentinaNode {
     return this.state.data.peers.find((p) => p.name === nameOrId)?.partyId
   }
 
+  /** Programmatic registration wins; otherwise the offer's declarative
+   *  AdapterSpec binds (and is cached); Echo is the fallback. */
+  private resolveAdapter(offer: AgentOffer): AgentAdapter {
+    const registered = this.adapters.get(offer.id)
+    if (registered) return registered
+    if (offer.adapter) {
+      let built: AgentAdapter
+      switch (offer.adapter.kind) {
+        case "scoped-fs":
+          built = new ScopedFsAdapter(offer.adapter.baseRoot ?? this.state.stateDir)
+          break
+        case "claude-code":
+          built = new ClaudeCodeAdapter({ baseRoot: offer.adapter.baseRoot, model: offer.adapter.model })
+          break
+        default:
+          built = new EchoAdapter()
+      }
+      this.adapters.set(offer.id, built)
+      return built
+    }
+    return this.adapter
+  }
+
   private upsertPeer(peer: PeerRef): void {
     const peers = this.state.data.peers
     const idx = peers.findIndex((p) => p.name === peer.name)
@@ -248,6 +274,16 @@ export class AgentinaNode {
     const callerParty = decision.reason === "party" ? decision.partyId : "local"
 
     switch (route) {
+      // The console is the control surface in a browser — same trust
+      // model as the control endpoints (loopback / attributed party).
+      case "GET /":
+      case "GET /console": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "the console is local-only" })
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
+        res.end(CONSOLE_HTML)
+        return
+      }
+
       case "GET /agentina/v1/ping": {
         this.audit.append({ kind: "ping", decision: "allowed", partyId: callerParty })
         const body: PingResponse = {
@@ -282,7 +318,7 @@ export class AgentinaNode {
           policy = { grantId: decision.grant.id, scopes: decision.grant.scopes }
         }
 
-        const adapter = this.adapters.get(offer.id) ?? this.adapter
+        const adapter = this.resolveAdapter(offer)
         try {
           const result = await adapter.execute(offer, {
             message: String(body.message ?? ""),
@@ -335,6 +371,26 @@ export class AgentinaNode {
         const joined = await this.join(String(body.link ?? ""))
         return this.json(res, 200, joined)
       }
+      case "POST /agentina/v1/agents": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const id = String(body.id ?? "")
+        if (!id) return this.json(res, 400, { error: "Missing: id" })
+        const name = String(body.name ?? id)
+        const adapterSpec = (body.adapter ?? undefined) as AgentOffer["adapter"]
+        const offer: AgentOffer = {
+          id,
+          partyId: this.party.id,
+          name,
+          description: String(body.description ?? `${name} — offered by ${this.party.name}`),
+          skills: [{ id, name, description: String(body.description ?? name), tags: adapterSpec ? [adapterSpec.kind] : [] }],
+          lifecycle: "persistent",
+          ...(adapterSpec ? { adapter: adapterSpec } : {}),
+        }
+        this.addAgent(offer)
+        return this.json(res, 201, offer)
+      }
+
       case "POST /agentina/v1/task": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)

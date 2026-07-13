@@ -8,6 +8,7 @@ export default defineConfig({
       "@agentina-mesh/peer": resolve(__dirname, "packages/peer/src/index.ts"),
       "@agentina-mesh/grants": resolve(__dirname, "packages/grants/src/index.ts"),
       "@agentina-mesh/node": resolve(__dirname, "packages/node/src/index.ts"),
+      "@agentina-mesh/console": resolve(__dirname, "packages/console/src/index.ts"),
     },
   },
   test: {

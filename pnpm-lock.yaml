@@ -36,6 +36,8 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  packages/console: {}
+
   packages/grants:
     dependencies:
       '@agentina-mesh/protocol':
@@ -44,6 +46,9 @@ importers:
 
   packages/node:
     dependencies:
+      '@agentina-mesh/console':
+        specifier: workspace:*
+        version: link:../console
       '@agentina-mesh/grants':
         specifier: workspace:*
         version: link:../grants

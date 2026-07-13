@@ -65,6 +65,17 @@ export interface Grant {
   createdAt: string
 }
 
+/** How an AgentOffer executes, declaratively — so offers restored from
+ *  a state file bind to the right runtime without code. Programmatic
+ *  adapter registration (host code) overrides this. */
+export interface AdapterSpec {
+  kind: "echo" | "scoped-fs" | "claude-code"
+  /** Home directory for fs-flavored adapters (the outermost root;
+   *  grants confine within it per party). */
+  baseRoot?: string
+  model?: string
+}
+
 /** An agent a party exposes to the mesh. `lifecycle` distinguishes
  *  permanent agents from session-scoped ones reaped after a
  *  collaboration ends. */
@@ -75,6 +86,7 @@ export interface AgentOffer {
   description: string
   skills: AgentSkill[]
   lifecycle: "persistent" | { session: string; ttlSeconds: number }
+  adapter?: AdapterSpec
 }
 
 /** An ephemeral collaboration between parties (M3). */

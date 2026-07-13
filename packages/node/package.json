@@ -11,7 +11,8 @@
   "dependencies": {
     "@agentina-mesh/protocol": "workspace:*",
     "@agentina-mesh/peer": "workspace:*",
-    "@agentina-mesh/grants": "workspace:*"
+    "@agentina-mesh/grants": "workspace:*",
+    "@agentina-mesh/console": "workspace:*"
   },
   "license": "MIT"
 }
