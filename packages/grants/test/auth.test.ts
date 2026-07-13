@@ -43,6 +43,27 @@ describe("decideAuth — party attribution", () => {
     expect(d.allowed).toBe(false)
   })
 
+  it("token attribution beats the loopback exemption — two parties on one host", () => {
+    // Regression (found live in the M2 demo): a paired party calling a
+    // node on the SAME machine arrived via loopback and was promoted to
+    // "local owner", skipping grant enforcement entirely.
+    const d = decideAuth({
+      remoteAddress: "127.0.0.1",
+      authorizationHeader: `Bearer ${cred.inboundToken}`,
+      resolveToken: resolve,
+    })
+    expect(d).toEqual({ allowed: true, reason: "party", partyId: "pt_client" })
+  })
+
+  it("an INVALID token is denied even from loopback — no silent owner promotion", () => {
+    const d = decideAuth({
+      remoteAddress: "127.0.0.1",
+      authorizationHeader: "Bearer forged",
+      resolveToken: resolve,
+    })
+    expect(d.allowed).toBe(false)
+  })
+
   it("denies a revoked party's token", () => {
     const s = new CredentialStore()
     const c = s.issue("pt_x", { inboundToken: "tok-x", outboundToken: "tok-y" })

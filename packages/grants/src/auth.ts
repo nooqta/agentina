@@ -29,15 +29,22 @@ export type AuthDecision =
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 
 export function decideAuth(req: AuthRequest): AuthDecision {
-  const trustLoopback = req.trustLoopback !== false
-  if (trustLoopback && LOOPBACK.has(req.remoteAddress)) return { allowed: true, reason: "loopback" }
-
+  // Token attribution comes FIRST — a caller presenting a Bearer token is
+  // claiming a party identity and must be judged on it, even from
+  // loopback. Otherwise two parties sharing a host (or any local process
+  // replaying a peer's request) would be silently promoted to "owner" and
+  // skip grant enforcement. Loopback is only an exemption for callers
+  // presenting NO credentials (the owner's CLI/console).
   const header = req.authorizationHeader || ""
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : ""
   if (token) {
     const partyId = req.resolveToken(token)
     if (partyId) return { allowed: true, reason: "party", partyId }
+    return { allowed: false, reason: "missing-or-invalid-token" }
   }
+
+  const trustLoopback = req.trustLoopback !== false
+  if (trustLoopback && LOOPBACK.has(req.remoteAddress)) return { allowed: true, reason: "loopback" }
 
   return { allowed: false, reason: "missing-or-invalid-token" }
 }
