@@ -68,8 +68,13 @@ Usage:
   agentina invite [--port <n>]            mint a one-time pairing link
   agentina join <link> [--port <n>]       redeem a pairing link from another party
   agentina test <peer> [--port <n>]       authenticated connection test
-  agentina status [--port <n>]            party, peers, agents, recent audit
-  agentina demo                           two parties on loopback: pair → test → task → deny → revoke → audit
+  agentina task <peer> <message…> [--agent <id>] [--port <n>]
+  agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>] [--expires <ISO>]
+  agentina grants [--port <n>]            list grants you have authored (+ proposals)
+  agentina approve <grant-id>             approve a counterparty's proposed grant
+  agentina revoke <grant-id>              revoke a grant
+  agentina status [--port <n>]            party, peers, agents, grants, recent audit
+  agentina demo                           two parties on loopback: pair → deny → grant → scoped read → escape denied → revoke → audit
 
 Defaults: state ${DEFAULT_STATE}, port ${DEFAULT_PORT}.
 `
@@ -127,6 +132,62 @@ async function main(): Promise<void> {
       if (!positional[0]) throw new Error("Usage: agentina test <peer-name>")
       const result = await control(port, "POST", "/agentina/v1/test", { peer: positional[0] })
       console.log(`✓ ${result.party.name} (${result.party.id}) — ${result.latencyMs}ms`)
+      return
+    }
+
+    case "task": {
+      const [peer, ...words] = positional
+      if (!peer || words.length === 0) throw new Error("Usage: agentina task <peer> <message…> [--agent <id>]")
+      // Route through the node's mesh so health-gating and peer tokens apply.
+      const result = await control(port, "POST", "/agentina/v1/task", {
+        peer,
+        message: words.join(" "),
+        agent: typeof flags.agent === "string" ? flags.agent : undefined,
+      })
+      console.log(result.content)
+      return
+    }
+
+    case "grant": {
+      const to = typeof flags.to === "string" ? flags.to : ""
+      const agents = typeof flags.agent === "string" ? flags.agent.split(",").map((s) => s.trim()) : []
+      if (!to || agents.length === 0) throw new Error("Usage: agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>]")
+      const scopes: unknown[] = []
+      if (typeof flags.fs === "string") {
+        scopes.push({ kind: "fs", root: flags.fs, mode: flags.mode === "rw" ? "rw" : "ro" })
+      }
+      if (typeof flags.skill === "string") scopes.push({ kind: "skill", skillId: flags.skill })
+      const grant = await control(port, "POST", "/agentina/v1/grants", {
+        toParty: to,
+        agentIds: agents,
+        scopes,
+        expiresAt: typeof flags.expires === "string" ? flags.expires : undefined,
+      })
+      console.log(`Granted ${grant.id}: ${to} may invoke [${agents.join(", ")}]${scopes.length ? ` with ${scopes.length} scope(s)` : ""}`)
+      return
+    }
+
+    case "grants": {
+      const { grants } = await control(port, "GET", "/agentina/v1/grants")
+      if (!grants.length) return console.log("No grants.")
+      for (const g of grants) {
+        const scopeStr = g.scopes.map((s: any) => s.kind === "fs" ? `fs:${s.root}(${s.mode})` : s.kind === "skill" ? `skill:${s.skillId}` : s.kind).join(", ")
+        console.log(`${g.id} [${g.status}] → ${g.toParty} agents=[${g.agentIds.join(",")}] ${scopeStr}${g.expiresAt ? ` expires ${g.expiresAt}` : ""}`)
+      }
+      return
+    }
+
+    case "approve": {
+      if (!positional[0]) throw new Error("Usage: agentina approve <grant-id>")
+      const g = await control(port, "POST", "/agentina/v1/grants/approve", { id: positional[0] })
+      console.log(`Approved ${g.id} → ${g.toParty}`)
+      return
+    }
+
+    case "revoke": {
+      if (!positional[0]) throw new Error("Usage: agentina revoke <grant-id>")
+      await control(port, "POST", "/agentina/v1/grants/revoke", { id: positional[0] })
+      console.log(`Revoked ${positional[0]} — the party's next call is denied`)
       return
     }
 

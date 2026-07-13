@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest"
 import { runDemo } from "../src/demo"
 
-// The M0 integration suite IS the demo: real HTTP over loopback, two
-// nodes, no mocks, no LLM keys. Each scorecard step is an assertion.
+// The integration suite IS the demo: real HTTP over loopback, two
+// nodes, real grants, no mocks, no LLM keys. Each scorecard step is an
+// assertion.
 
-describe("M0 — pair → test → task → deny → revoke → audit", () => {
-  it("runs the full two-party loop", async () => {
+describe("M1 — pair → deny → grant → scoped read → escape denied → revoke → audit", () => {
+  it("runs the full freelancer↔client loop", async () => {
     const lines: string[] = []
     const result = await runDemo({ basePort: 19801, print: (l) => lines.push(l) })
     for (const step of result.steps) {
@@ -16,9 +17,13 @@ describe("M0 — pair → test → task → deny → revoke → audit", () => {
       "pair",
       "invite replay rejected",
       "connection test",
-      "task round-trip",
+      "deny before grant",
+      "grant",
+      "scoped read",
+      "path escape denied",
+      "ungranted agent denied",
       "forged token denied",
-      "revocation",
+      "grant revoked",
       "audit trail",
     ])
   }, 30_000)
