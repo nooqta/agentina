@@ -96,8 +96,8 @@ Every adapter implements the same 4-method contract (`start`, `stop`, `sendReply
 
 - **M0 ✓:** pair → connection test → task exchange → deny → revoke → audit.
 - **M1 ✓:** Grants enforced at `/task` (party → allowed agents), `fs`/`skill` scopes with traversal/symlink-proof confinement, grant propose/approve/revoke, Claude Code adapter (cwd jailed to the granted root, tool allowlist derived from the grant mode).
-- **M2:** Web console — pairing wizard, scope picker, grants dashboard, live monitor. Non-technical users, zero CLI.
-- **M3:** Ephemeral session agents (TTL, reaped after the engagement), `ssh`/`repo` scopes, grant expiry UX.
+- **M2 ✓:** Web console — pairing wizard, scope picker, grants dashboard, live monitor. Non-technical users, zero CLI.
+- **M3 ✓:** Sessions — ephemeral agents that self-destruct with their grants (TTL or one click), `ssh`/`repo` scopes (credentials come only from the grant), grant expiry with live countdowns. Full console parity: every action clickable.
 - **Later:** N-party meshes, hub (master-mesh) administration, Ed25519 credentials, relay transport.
 
 ## Development

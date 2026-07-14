@@ -44,6 +44,30 @@ function opt(flags: Flags): { stateDir: string; port: number } {
   }
 }
 
+/** "45m" | "2h" | "7d" | "3600" (seconds) → seconds. */
+function parseDuration(v: string): number {
+  const m = /^(\d+)\s*([smhd]?)$/.exec(v.trim())
+  if (!m) throw new Error(`Can't parse duration "${v}" — use 45m, 2h, 7d, or seconds`)
+  const n = Number(m[1])
+  const mult = { "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2] as "" | "s" | "m" | "h" | "d"]
+  return n * mult
+}
+
+/** Shared scope flags: --fs <dir> [--mode ro|rw], --ssh user@host, --repo <url> [--mode], --skill <id>. */
+function buildScopes(flags: Flags): unknown[] {
+  const scopes: unknown[] = []
+  const mode = flags.mode === "rw" ? "rw" : "ro"
+  if (typeof flags.fs === "string") scopes.push({ kind: "fs", root: flags.fs, mode })
+  if (typeof flags.ssh === "string") {
+    const [user, host] = flags.ssh.split("@")
+    if (!user || !host) throw new Error("--ssh expects user@host")
+    scopes.push({ kind: "ssh", host, user })
+  }
+  if (typeof flags.repo === "string") scopes.push({ kind: "repo", url: flags.repo, mode })
+  if (typeof flags.skill === "string") scopes.push({ kind: "skill", skillId: flags.skill })
+  return scopes
+}
+
 async function control(port: number, method: string, path: string, body?: unknown): Promise<any> {
   let res: Response
   try {
@@ -74,7 +98,10 @@ Usage:
   agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
   agentina channel telegram --token-env <VAR> [--chats <id,id…>]
   agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
-  agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>] [--expires <ISO>]
+  agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--skill <id>] [--expires 2h|7d|<ISO>]
+  agentina session --to <peer> --ttl <45m|2h> --adapter scoped-fs|ssh-exec|scoped-git|claude-code
+                   [--root <dir>] [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--agent-id <id>]
+  agentina sessions [--port <n>]          list sessions; close with: agentina session-close <id>
   agentina grants [--port <n>]            list grants you have authored (+ proposals)
   agentina approve <grant-id>             approve a counterparty's proposed grant
   agentina revoke <grant-id>              revoke a grant
@@ -189,19 +216,58 @@ async function main(): Promise<void> {
     case "grant": {
       const to = typeof flags.to === "string" ? flags.to : ""
       const agents = typeof flags.agent === "string" ? flags.agent.split(",").map((s) => s.trim()) : []
-      if (!to || agents.length === 0) throw new Error("Usage: agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--skill <id>]")
-      const scopes: unknown[] = []
-      if (typeof flags.fs === "string") {
-        scopes.push({ kind: "fs", root: flags.fs, mode: flags.mode === "rw" ? "rw" : "ro" })
+      if (!to || agents.length === 0) throw new Error("Usage: agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--ssh user@host] [--repo url] [--skill <id>] [--expires 2h]")
+      const scopes = buildScopes(flags)
+      let expiresAt: string | undefined
+      if (typeof flags.expires === "string") {
+        expiresAt = flags.expires.includes("T")
+          ? flags.expires // already ISO
+          : new Date(Date.now() + parseDuration(flags.expires) * 1000).toISOString()
       }
-      if (typeof flags.skill === "string") scopes.push({ kind: "skill", skillId: flags.skill })
       const grant = await control(port, "POST", "/agentina/v1/grants", {
         toParty: to,
         agentIds: agents,
         scopes,
-        expiresAt: typeof flags.expires === "string" ? flags.expires : undefined,
+        expiresAt,
       })
-      console.log(`Granted ${grant.id}: ${to} may invoke [${agents.join(", ")}]${scopes.length ? ` with ${scopes.length} scope(s)` : ""}`)
+      console.log(`Granted ${grant.id}: ${to} may invoke [${agents.join(", ")}]${scopes.length ? ` with ${scopes.length} scope(s)` : ""}${expiresAt ? `, expires ${expiresAt}` : ""}`)
+      return
+    }
+
+    case "session": {
+      const to = typeof flags.to === "string" ? flags.to : ""
+      const ttlStr = typeof flags.ttl === "string" ? flags.ttl : ""
+      const adapterKind = typeof flags.adapter === "string" ? flags.adapter : ""
+      if (!to || !ttlStr || !adapterKind) throw new Error("Usage: agentina session --to <peer> --ttl <45m|2h> --adapter <kind> [scope flags]")
+      const result = await control(port, "POST", "/agentina/v1/sessions", {
+        toParty: to,
+        ttlSeconds: parseDuration(ttlStr),
+        agent: {
+          id: typeof flags["agent-id"] === "string" ? flags["agent-id"] : undefined,
+          adapter: { kind: adapterKind, ...(typeof flags.root === "string" ? { baseRoot: flags.root } : {}) },
+        },
+        scopes: buildScopes(flags),
+      })
+      console.log(`Session ${result.session.id} open — ephemeral agent "${result.offer.id}" for ${to}`)
+      console.log(`Self-destructs at ${result.session.expiresAt} (grant ${result.grantId} dies with it)`)
+      return
+    }
+
+    case "sessions": {
+      const s = await control(port, "GET", "/agentina/v1/status")
+      const sessions = s.sessions ?? []
+      if (!sessions.length) return console.log("No sessions.")
+      for (const x of sessions) {
+        const left = x.expiresAt ? Math.max(0, Math.round((Date.parse(x.expiresAt) - Date.now()) / 1000)) : "-"
+        console.log(`${x.id} [${x.status}] agents=[${x.ephemeralAgents.join(",")}] ${x.status === "active" ? `${left}s left` : `closed ${x.closedAt ?? ""}`}`)
+      }
+      return
+    }
+
+    case "session-close": {
+      if (!positional[0]) throw new Error("Usage: agentina session-close <id>")
+      await control(port, "POST", "/agentina/v1/sessions/close", { id: positional[0] })
+      console.log(`Session ${positional[0]} closed — its agents are gone, its grants revoked`)
       return
     }
 
@@ -233,7 +299,7 @@ async function main(): Promise<void> {
       const s = await control(port, "GET", "/agentina/v1/status")
       console.log(`Party:    ${s.party.name} (${s.party.id})`)
       console.log(`URL:      ${s.url}   protocol ${s.protocol}`)
-      console.log(`Agents:   ${s.agents.join(", ") || "none"}`)
+      console.log(`Agents:   ${s.agents.map((a: any) => (typeof a === "string" ? a : `${a.id}(${a.adapter})`)).join(", ") || "none"}`)
       for (const p of s.peers) {
         console.log(`Peer:     ${p.peer} ${p.healthy ? "✓ healthy" : "✗ unreachable"} — ${p.peerUrl} (${p.skills.length} skills)`)
       }

@@ -4,6 +4,11 @@
 // like the rest of the control surface). Vanilla JS polling the local
 // control API — no build step, no CDN, works on an air-gapped mesh.
 //
+// PARITY RULE: every action a user can take via the CLI must exist
+// here — pairing, testing, grants (all scope kinds + expiry), tasks,
+// agent offers, sessions, channel config. The console is the product
+// for non-technical parties; the CLI is the shortcut for the rest.
+//
 // NOTE for maintainers: the page lives inside a TS template literal, so
 // the inline <script> deliberately avoids backticks and ${…} — string
 // concatenation only.
@@ -65,7 +70,8 @@ export const CONSOLE_HTML = `<!doctype html>
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
   .dot.ok { background: var(--ax-accent); box-shadow: 0 0 6px var(--ax-accent-2); }
   .dot.bad { background: var(--ax-err); }
-  .st-active { color: var(--ax-accent); } .st-proposed { color: var(--ax-warn); } .st-revoked { color: var(--ax-muted); }
+  .st-active { color: var(--ax-accent); } .st-proposed { color: var(--ax-warn); } .st-revoked, .st-closed { color: var(--ax-muted); }
+  .ttl { font: 10.5px var(--ax-mono); color: var(--ax-warn); }
   .feed { font: 11.5px var(--ax-mono); display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
   .feed .denied { color: var(--ax-err); }
   .feed .allowed { color: var(--ax-muted); }
@@ -85,7 +91,7 @@ export const CONSOLE_HTML = `<!doctype html>
   <span class="chip" id="party-id"></span>
   <span class="chip" id="proto"></span>
   <span class="chip" id="node-url"></span>
-  <span class="chip" id="channels"></span>
+  <span class="chip" id="channels-chip"></span>
 </header>
 <main>
   <section class="card">
@@ -102,23 +108,68 @@ export const CONSOLE_HTML = `<!doctype html>
 
   <section class="card">
     <h2><b>2</b> · Grant access <span style="text-transform:none">(what may THEY touch?)</span></h2>
-    <div class="row"><select id="g-peer"></select></div>
-    <div class="row"><select id="g-agent"></select></div>
+    <div class="row"><select id="g-peer"></select><select id="g-agent"></select></div>
     <div class="row">
-      <input id="g-fs" placeholder="directory to share, e.g. /home/me/project-docs">
+      <input id="g-fs" placeholder="directory to share (fs scope)">
       <label class="mode"><input type="radio" name="g-mode" value="ro" checked> read-only</label>
       <label class="mode"><input type="radio" name="g-mode" value="rw"> read-write</label>
     </div>
-    <div class="row"><button id="btn-grant">Grant</button><span class="hint">enforced on YOUR node — revoke any time</span></div>
+    <div class="row">
+      <input id="g-ssh" placeholder="ssh scope: user@host (optional)">
+      <input id="g-repo" placeholder="repo scope: git url (optional)">
+    </div>
+    <div class="row">
+      <input id="g-expires" placeholder="expires: 2h, 7d… (optional)" style="max-width:160px">
+      <button id="btn-grant">Grant</button>
+      <span class="hint">enforced on YOUR node — revoke any time</span>
+    </div>
     <h2 style="margin-top:18px">Grants you authored</h2>
     <div class="list" id="grants"></div>
   </section>
 
   <section class="card">
-    <h2><b>3</b> · Send a task</h2>
+    <h2><b>3</b> · Sessions <span style="text-transform:none">(temporary agents that self-destruct)</span></h2>
+    <div class="row"><select id="s-peer"></select><input id="s-ttl" placeholder="ttl: 45m, 2h" style="max-width:110px"><select id="s-adapter">
+      <option value="scoped-fs">scoped-fs (share files)</option>
+      <option value="ssh-exec">ssh-exec (run on a server)</option>
+      <option value="scoped-git">scoped-git (read a repo)</option>
+      <option value="claude-code">claude-code (AI worker)</option>
+    </select></div>
+    <div class="row">
+      <input id="s-scope" placeholder="directory to share">
+      <label class="mode"><input type="radio" name="s-mode" value="ro" checked> ro</label>
+      <label class="mode"><input type="radio" name="s-mode" value="rw"> rw</label>
+      <button id="btn-session">Open session</button>
+    </div>
+    <div class="list" id="sessions"></div>
+  </section>
+
+  <section class="card">
+    <h2><b>4</b> · Send a task</h2>
     <div class="row"><select id="t-peer"></select><input id="t-agent" placeholder="agent (e.g. files)" style="max-width:130px"></div>
     <div class="row"><input id="t-msg" placeholder='e.g. "read brief.txt" or "list"'><button id="btn-task">Send</button></div>
     <div class="reply" id="t-reply"></div>
+  </section>
+
+  <section class="card">
+    <h2>Your agents <span style="text-transform:none">(what YOU offer)</span></h2>
+    <div class="list" id="agents" style="margin-bottom:10px"></div>
+    <div class="row"><input id="a-id" placeholder="agent id (e.g. files)" style="max-width:140px"><select id="a-adapter">
+      <option value="scoped-fs">scoped-fs</option>
+      <option value="ssh-exec">ssh-exec</option>
+      <option value="scoped-git">scoped-git</option>
+      <option value="claude-code">claude-code</option>
+      <option value="echo">echo</option>
+    </select><input id="a-root" placeholder="base directory (fs/claude)"><button id="btn-offer">Offer</button></div>
+    <div class="hint">Offering exposes nothing by itself — a party still needs a grant to invoke it.</div>
+  </section>
+
+  <section class="card">
+    <h2>Channels <span style="text-transform:none">(Telegram · GitLab)</span></h2>
+    <div class="row"><span class="hint" id="ch-active">…</span></div>
+    <div class="row"><input id="ch-tg-env" placeholder="Telegram: token env var (e.g. TG_BOT_TOKEN)"><input id="ch-tg-chats" placeholder="allowed chat ids, comma (optional)" style="max-width:190px"><button class="ghost" id="btn-ch-tg">Save</button></div>
+    <div class="row"><input id="ch-gl-host" placeholder="GitLab host url"><input id="ch-gl-env" placeholder="token env var" style="max-width:140px"><input id="ch-gl-secret" placeholder="webhook secret env (opt)" style="max-width:170px"><button class="ghost" id="btn-ch-gl">Save</button></div>
+    <div class="hint">Tokens live in environment variables — never in files. Restart the node after saving. GitLab webhook: &lt;node-url&gt;/channels/gitlab/webhook (note events).</div>
   </section>
 
   <section class="card">
@@ -131,7 +182,6 @@ export const CONSOLE_HTML = `<!doctype html>
 (function () {
   "use strict";
   var API = "/agentina/v1";
-  var state = { peers: [], agents: [], grants: [] };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; }
@@ -151,7 +201,21 @@ export const CONSOLE_HTML = `<!doctype html>
       });
     });
   }
-
+  // "45m" | "2h" | "7d" | "3600" -> seconds
+  function parseDuration(v) {
+    var m = /^(\\d+)\\s*([smhd]?)$/.exec(v.trim());
+    if (!m) throw new Error('Cannot parse "' + v + '" — use 45m, 2h, 7d');
+    var mult = { "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+    return Number(m[1]) * mult;
+  }
+  function countdown(iso) {
+    var left = Math.round((Date.parse(iso) - Date.now()) / 1000);
+    if (left <= 0) return "expiring…";
+    if (left < 90) return left + "s left";
+    if (left < 5400) return Math.round(left / 60) + "m left";
+    if (left < 129600) return Math.round(left / 3600) + "h left";
+    return Math.round(left / 86400) + "d left";
+  }
   function fillSelect(sel, values, current) {
     sel.innerHTML = "";
     values.forEach(function (v) {
@@ -161,14 +225,15 @@ export const CONSOLE_HTML = `<!doctype html>
       sel.appendChild(o);
     });
   }
+  function mode(name) { return document.querySelector('input[name="' + name + '"]:checked').value; }
 
   function render(s) {
     $("party-name").textContent = s.party.name;
     $("party-id").textContent = s.party.id;
     $("proto").textContent = s.protocol;
     $("node-url").textContent = s.url;
-    $("channels").textContent = (s.channels && s.channels.length) ? "channels: " + s.channels.join(", ") : "no channels";
-    state.peers = s.peers; state.agents = s.agents; state.grants = s.grants || [];
+    $("channels-chip").textContent = (s.channels && s.channels.length) ? "channels: " + s.channels.join(", ") : "no channels";
+    $("ch-active").textContent = (s.channels && s.channels.length) ? "Active: " + s.channels.join(", ") : "No channels running. Configure below, set the env var, restart the node.";
 
     var peersEl = $("peers");
     peersEl.innerHTML = s.peers.length ? "" : '<div class="hint">No peers yet — create an invite and send the link, or paste one you received.</div>';
@@ -191,15 +256,32 @@ export const CONSOLE_HTML = `<!doctype html>
     });
 
     var peerNames = s.peers.map(function (p) { return p.peer; });
-    fillSelect($("g-peer"), peerNames.length ? peerNames : ["— pair first —"], $("g-peer").value);
-    fillSelect($("t-peer"), peerNames.length ? peerNames : ["— pair first —"], $("t-peer").value);
-    fillSelect($("g-agent"), s.agents, $("g-agent").value);
+    var agentIds = (s.agents || []).map(function (a) { return typeof a === "string" ? a : a.id; });
+    ["g-peer", "t-peer", "s-peer"].forEach(function (id) {
+      fillSelect($(id), peerNames.length ? peerNames : ["— pair first —"], $(id).value);
+    });
+    fillSelect($("g-agent"), agentIds, $("g-agent").value);
+
+    var agentsEl = $("agents");
+    agentsEl.innerHTML = "";
+    (s.agents || []).forEach(function (a) {
+      var id = typeof a === "string" ? a : a.id;
+      var kind = typeof a === "string" ? "echo" : a.adapter;
+      var sess = typeof a === "string" ? null : a.session;
+      var div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = "<span><b>" + esc(id) + '</b> <span class="meta">' + esc(kind) + (sess ? ' · <span class="ttl">session ' + esc(sess) + "</span>" : "") + "</span></span>";
+      agentsEl.appendChild(div);
+    });
 
     var grantsEl = $("grants");
-    grantsEl.innerHTML = state.grants.length ? "" : '<div class="hint">Nothing granted. Pairing alone grants nothing — that is the point.</div>';
-    state.grants.forEach(function (g) {
+    var grants = s.grants || [];
+    grantsEl.innerHTML = grants.length ? "" : '<div class="hint">Nothing granted. Pairing alone grants nothing — that is the point.</div>';
+    grants.forEach(function (g) {
       var scopeStr = (g.scopes || []).map(function (sc) {
         if (sc.kind === "fs") return "fs:" + sc.root + " (" + sc.mode + ")";
+        if (sc.kind === "ssh") return "ssh:" + sc.user + "@" + sc.host;
+        if (sc.kind === "repo") return "repo:" + sc.url + " (" + sc.mode + ")";
         if (sc.kind === "skill") return "skill:" + sc.skillId;
         return sc.kind;
       }).join(", ");
@@ -207,7 +289,8 @@ export const CONSOLE_HTML = `<!doctype html>
       div.className = "item";
       div.innerHTML =
         '<span><span class="st-' + g.status + '">●</span> <b>' + esc(g.agentIds.join(", ")) + "</b> → " + esc(g.toParty) +
-        ' <span class="meta">' + esc(scopeStr || "no scopes") + " · " + g.status + "</span></span>";
+        ' <span class="meta">' + esc(scopeStr || "no scopes") + " · " + g.status + "</span>" +
+        (g.expiresAt && g.status === "active" ? ' <span class="ttl">' + countdown(g.expiresAt) + "</span>" : "") + "</span>";
       var actions = document.createElement("span");
       if (g.status === "proposed") {
         var ok = document.createElement("button");
@@ -230,6 +313,28 @@ export const CONSOLE_HTML = `<!doctype html>
       }
       div.appendChild(actions);
       grantsEl.appendChild(div);
+    });
+
+    var sessEl = $("sessions");
+    var sessions = s.sessions || [];
+    sessEl.innerHTML = sessions.length ? "" : '<div class="hint">No sessions. Open one for a fixed-length engagement — everything it created disappears when it ends.</div>';
+    sessions.slice().reverse().forEach(function (x) {
+      var div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML =
+        '<span><span class="st-' + x.status + '">●</span> <b>' + esc(x.ephemeralAgents.join(", ")) + "</b>" +
+        ' <span class="meta">' + esc(x.id) + " · " + x.status + "</span>" +
+        (x.status === "active" && x.expiresAt ? ' <span class="ttl">' + countdown(x.expiresAt) + "</span>" : "") + "</span>";
+      if (x.status === "active") {
+        var btn = document.createElement("button");
+        btn.className = "danger"; btn.textContent = "Close now";
+        btn.onclick = function () {
+          api("POST", "/sessions/close", { id: x.id }).then(function () { toast("Session closed — agent gone, grant revoked"); refresh(); })
+            .catch(function (e) { toast("✗ " + e.message); });
+        };
+        div.appendChild(btn);
+      }
+      sessEl.appendChild(div);
     });
 
     var feed = $("feed");
@@ -273,18 +378,91 @@ export const CONSOLE_HTML = `<!doctype html>
 
   $("btn-grant").onclick = function () {
     var scopes = [];
-    var fs = $("g-fs").value.trim();
-    var mode = document.querySelector('input[name="g-mode"]:checked').value;
-    if (fs) scopes.push({ kind: "fs", root: fs, mode: mode });
-    api("POST", "/grants", {
-      toParty: $("g-peer").value,
-      agentIds: [$("g-agent").value],
-      scopes: scopes,
-    }).then(function (g) {
+    var m = mode("g-mode");
+    if ($("g-fs").value.trim()) scopes.push({ kind: "fs", root: $("g-fs").value.trim(), mode: m });
+    var sshVal = $("g-ssh").value.trim();
+    if (sshVal) {
+      var parts = sshVal.split("@");
+      if (parts.length !== 2) return toast("✗ ssh scope must be user@host");
+      scopes.push({ kind: "ssh", user: parts[0], host: parts[1] });
+    }
+    if ($("g-repo").value.trim()) scopes.push({ kind: "repo", url: $("g-repo").value.trim(), mode: m });
+    var body = { toParty: $("g-peer").value, agentIds: [$("g-agent").value], scopes: scopes };
+    var exp = $("g-expires").value.trim();
+    try {
+      if (exp) body.expiresAt = new Date(Date.now() + parseDuration(exp) * 1000).toISOString();
+    } catch (e) { return toast("✗ " + e.message); }
+    api("POST", "/grants", body).then(function (g) {
       toast("✓ Granted " + g.id);
-      $("g-fs").value = "";
+      $("g-fs").value = ""; $("g-ssh").value = ""; $("g-repo").value = ""; $("g-expires").value = "";
       refresh();
     }).catch(function (e) { toast("✗ " + e.message); });
+  };
+
+  $("s-adapter").onchange = function () {
+    var ph = { "scoped-fs": "directory to share", "ssh-exec": "user@host to run on", "scoped-git": "git repository url", "claude-code": "working directory" };
+    $("s-scope").placeholder = ph[$("s-adapter").value] || "scope";
+  };
+
+  $("btn-session").onclick = function () {
+    var kind = $("s-adapter").value;
+    var val = $("s-scope").value.trim();
+    var m = mode("s-mode");
+    var scopes = [];
+    var adapter = { kind: kind };
+    if (kind === "scoped-fs" || kind === "claude-code") {
+      if (!val) return toast("✗ give the session a directory");
+      adapter.baseRoot = val;
+      scopes.push({ kind: "fs", root: val, mode: m });
+    } else if (kind === "ssh-exec") {
+      var parts = val.split("@");
+      if (parts.length !== 2) return toast("✗ ssh needs user@host");
+      scopes.push({ kind: "ssh", user: parts[0], host: parts[1] });
+    } else if (kind === "scoped-git") {
+      if (!val) return toast("✗ give the session a repo url");
+      scopes.push({ kind: "repo", url: val, mode: m });
+    }
+    var ttl;
+    try { ttl = parseDuration($("s-ttl").value.trim() || ""); } catch (e) { return toast("✗ " + e.message); }
+    api("POST", "/sessions", { toParty: $("s-peer").value, ttlSeconds: ttl, agent: { adapter: adapter }, scopes: scopes })
+      .then(function (r) {
+        toast("✓ Session " + r.session.id + " — agent " + r.offer.id + " self-destructs in " + $("s-ttl").value);
+        $("s-scope").value = ""; $("s-ttl").value = "";
+        refresh();
+      }).catch(function (e) { toast("✗ " + e.message); });
+  };
+
+  $("btn-offer").onclick = function () {
+    var id = $("a-id").value.trim();
+    if (!id) return toast("✗ give the agent an id");
+    var adapter = { kind: $("a-adapter").value };
+    if ($("a-root").value.trim()) adapter.baseRoot = $("a-root").value.trim();
+    api("POST", "/agents", { id: id, adapter: adapter }).then(function () {
+      toast("✓ Offering " + id + " — grant a party access to use it");
+      $("a-id").value = ""; $("a-root").value = "";
+      refresh();
+    }).catch(function (e) { toast("✗ " + e.message); });
+  };
+
+  $("btn-ch-tg").onclick = function () {
+    var env = $("ch-tg-env").value.trim();
+    if (!env) return toast("✗ name the env var that holds the bot token");
+    var body = { kind: "telegram", tokenEnv: env };
+    var chats = $("ch-tg-chats").value.trim();
+    if (chats) body.allowedChats = chats.split(",").map(function (c) { return c.trim(); });
+    api("POST", "/channels", body).then(function () { toast("✓ Telegram saved — restart the node to start it"); refresh(); })
+      .catch(function (e) { toast("✗ " + e.message); });
+  };
+
+  $("btn-ch-gl").onclick = function () {
+    var host = $("ch-gl-host").value.trim();
+    var env = $("ch-gl-env").value.trim();
+    if (!host || !env) return toast("✗ GitLab needs a host and a token env var");
+    var body = { kind: "gitlab", host: host, tokenEnv: env };
+    var sec = $("ch-gl-secret").value.trim();
+    if (sec) body.webhookSecretEnv = sec;
+    api("POST", "/channels", body).then(function () { toast("✓ GitLab saved — restart the node to start it"); refresh(); })
+      .catch(function (e) { toast("✗ " + e.message); });
   };
 
   $("btn-task").onclick = function () {

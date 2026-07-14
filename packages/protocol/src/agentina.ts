@@ -69,7 +69,7 @@ export interface Grant {
  *  a state file bind to the right runtime without code. Programmatic
  *  adapter registration (host code) overrides this. */
 export interface AdapterSpec {
-  kind: "echo" | "scoped-fs" | "claude-code"
+  kind: "echo" | "scoped-fs" | "claude-code" | "ssh-exec" | "scoped-git"
   /** Home directory for fs-flavored adapters (the outermost root;
    *  grants confine within it per party). */
   baseRoot?: string
@@ -89,7 +89,9 @@ export interface AgentOffer {
   adapter?: AdapterSpec
 }
 
-/** An ephemeral collaboration between parties (M3). */
+/** An ephemeral collaboration between parties. The owner opens it for a
+ *  counterparty; its agents and grants die with it — by TTL or by an
+ *  explicit close. */
 export interface CollabSession {
   id: string
   parties: string[]
@@ -97,6 +99,9 @@ export interface CollabSession {
   ephemeralAgents: string[]
   status: "active" | "closed"
   ttlSeconds?: number
+  createdAt: string
+  expiresAt?: string
+  closedAt?: string
 }
 
 // --- Pairing wire shapes ---
@@ -158,6 +163,8 @@ export type AuditKind =
   | "ping"
   | "grant-create"
   | "grant-revoke"
+  | "session-open"
+  | "session-close"
   | "auth-denied"
 
 export interface AuditEntry {

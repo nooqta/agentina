@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
 import type {
-  AgentCard, Party, PartyKind, Scope, AgentOffer,
+  AgentCard, Party, PartyKind, Scope, AgentOffer, CollabSession, AdapterSpec,
   InvitePayload, PairCompleteRequest, PairCompleteResponse, PingResponse,
 } from "@agentina-mesh/protocol"
 import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
@@ -12,6 +12,9 @@ import { NodeState } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
 import { ScopedFsAdapter } from "./adapters/scoped-fs"
 import { ClaudeCodeAdapter } from "./adapters/claude-code"
+import { SshExecAdapter } from "./adapters/ssh-exec"
+import { ScopedGitAdapter } from "./adapters/scoped-git"
+import { newId } from "./state"
 
 // --- AgentinaNode: one party's node ---
 //
@@ -45,6 +48,8 @@ export interface AgentinaNodeOptions {
    *  Default true; set false on shared hosts — control endpoints then
    *  become unreachable and the node is driven via its API/methods. */
   trustLoopback?: boolean
+  /** Session-reaper interval (ms). Default 30s; tests use ~100ms. */
+  sessionSweepMs?: number
   log?: (...args: unknown[]) => void
 }
 
@@ -61,12 +66,15 @@ export class AgentinaNode {
   private server?: Server
   private log: (...args: unknown[]) => void
   private trustLoopback: boolean
+  private sessionSweeper?: ReturnType<typeof setInterval>
+  private sessionSweepMsOpt: number
   readonly port: number
   readonly bind: string
 
   constructor(opts: AgentinaNodeOptions) {
     this.port = opts.port
     this.bind = opts.bind ?? "127.0.0.1"
+    this.sessionSweepMsOpt = opts.sessionSweepMs ?? 30_000
     this.trustLoopback = opts.trustLoopback !== false
     this.log = opts.log ?? console.error.bind(console, "[agentina]")
     const advertisable = this.bind !== "127.0.0.1" && this.bind !== "0.0.0.0" && this.bind !== "::"
@@ -177,10 +185,14 @@ export class AgentinaNode {
     } catch (e: any) {
       this.log(`[channels] start failed: ${e?.message || e}`)
     }
+    this.sweepSessions() // reap anything that expired while the node was down
+    this.sessionSweeper = setInterval(() => this.sweepSessions(), this.sessionSweepMsOpt)
+    this.sessionSweeper.unref?.()
     this.log(`node up — party "${this.party.name}" (${this.party.id}) on 127.0.0.1:${this.port}`)
   }
 
   async stop(): Promise<void> {
+    if (this.sessionSweeper) clearInterval(this.sessionSweeper)
     await this.channels.stop()
     await this.mesh.stop()
     await new Promise<void>((resolve) => this.server?.close(() => resolve()))
@@ -280,6 +292,83 @@ export class AgentinaNode {
     if (adapter) this.adapters.set(offer.id, adapter)
   }
 
+  /**
+   * Open an ephemeral collaboration session: a temporary agent that
+   * exists only for this engagement, plus a grant that dies with it.
+   * The sweeper reaps both when the TTL lapses; `closeSession` ends it
+   * early. "This agent will self-destruct."
+   */
+  openSession(opts: {
+    toParty: string
+    ttlSeconds: number
+    agent: { id?: string; name?: string; adapter: AdapterSpec }
+    scopes: Scope[]
+  }): { session: CollabSession; offer: AgentOffer; grantId: string } {
+    const partyId = this.resolvePartyId(opts.toParty)
+    if (!partyId) throw new Error(`Unknown party or peer: ${opts.toParty}`)
+    const sessionId = newId("s")
+    const expiresAt = new Date(Date.now() + opts.ttlSeconds * 1000).toISOString()
+    const agentId = opts.agent.id ?? `${opts.agent.adapter.kind}-${sessionId.slice(-6)}`
+    const offer: AgentOffer = {
+      id: agentId,
+      partyId: this.party.id,
+      name: opts.agent.name ?? `${agentId} (session)`,
+      description: `Ephemeral session agent — self-destructs ${expiresAt}`,
+      skills: [{ id: agentId, name: agentId, description: "session agent", tags: ["session", opts.agent.adapter.kind] }],
+      lifecycle: { session: sessionId, ttlSeconds: opts.ttlSeconds },
+      adapter: opts.agent.adapter,
+    }
+    this.addAgent(offer)
+    const grant = this.grants.create({
+      fromParty: this.party.id,
+      toParty: partyId,
+      agentIds: [agentId],
+      scopes: opts.scopes,
+      expiresAt,
+    })
+    const session: CollabSession = {
+      id: sessionId,
+      parties: [this.party.id, partyId],
+      grants: [grant.id],
+      ephemeralAgents: [agentId],
+      status: "active",
+      ttlSeconds: opts.ttlSeconds,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+    }
+    this.state.data.sessions.push(session)
+    this.state.save()
+    this.audit.append({ kind: "session-open", decision: "allowed", partyId, grantId: grant.id, detail: `${sessionId}: agent ${agentId}, ttl ${opts.ttlSeconds}s` })
+    return { session, offer, grantId: grant.id }
+  }
+
+  /** End a session now: its agents vanish, its grants are revoked. */
+  closeSession(id: string, reason = "closed"): boolean {
+    const session = this.state.data.sessions.find((s) => s.id === id && s.status === "active")
+    if (!session) return false
+    session.status = "closed"
+    session.closedAt = new Date().toISOString()
+    for (const agentId of session.ephemeralAgents) {
+      this.state.data.agents = this.state.data.agents.filter((a) => a.id !== agentId)
+      this.adapters.delete(agentId)
+    }
+    for (const grantId of session.grants) this.grants.revoke(grantId)
+    this.state.save()
+    this.audit.append({ kind: "session-close", decision: "allowed", partyId: session.parties[1], detail: `${id} (${reason})` })
+    return true
+  }
+
+  /** Reap sessions whose TTL lapsed. Runs on an interval from start(). */
+  private sweepSessions(): void {
+    const now = Date.now()
+    for (const s of this.state.data.sessions) {
+      if (s.status === "active" && s.expiresAt && Date.parse(s.expiresAt) <= now) {
+        this.closeSession(s.id, "ttl expired")
+        this.log(`[sessions] ${s.id} self-destructed (ttl)`)
+      }
+    }
+  }
+
   /** Owner-authored grant to a paired party (active immediately).
    *  `toParty` accepts a party id or a peer name. */
   grantAccess(toParty: string, agentIds: string[], scopes: Scope[], expiresAt?: string) {
@@ -308,6 +397,12 @@ export class AgentinaNode {
           break
         case "claude-code":
           built = new ClaudeCodeAdapter({ baseRoot: offer.adapter.baseRoot, model: offer.adapter.model })
+          break
+        case "ssh-exec":
+          built = new SshExecAdapter()
+          break
+        case "scoped-git":
+          built = new ScopedGitAdapter()
           break
         default:
           built = new EchoAdapter()
@@ -463,6 +558,30 @@ export class AgentinaNode {
         const joined = await this.join(String(body.link ?? ""))
         return this.json(res, 200, joined)
       }
+      case "POST /agentina/v1/sessions": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const ttlSeconds = Number(body.ttlSeconds ?? 0)
+        if (!body.toParty || !ttlSeconds || !body.agent) {
+          return this.json(res, 400, { error: "Missing: toParty, ttlSeconds, agent {adapter}" })
+        }
+        const result = this.openSession({
+          toParty: String(body.toParty),
+          ttlSeconds,
+          agent: body.agent as { id?: string; name?: string; adapter: AdapterSpec },
+          scopes: (Array.isArray(body.scopes) ? body.scopes : []) as Scope[],
+        })
+        return this.json(res, 201, result)
+      }
+      case "POST /agentina/v1/sessions/close": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        if (!this.closeSession(String(body.id ?? ""), "closed by owner")) {
+          return this.json(res, 404, { error: "No active session with that id" })
+        }
+        return this.json(res, 200, { closed: body.id })
+      }
+
       case "POST /agentina/v1/channels": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
@@ -554,10 +673,16 @@ export class AgentinaNode {
           party: this.party,
           url: this.state.data.url,
           protocol: PROTOCOL_VERSION,
-          agents: this.state.data.agents.map((a) => a.id),
+          agents: this.state.data.agents.map((a) => ({
+            id: a.id,
+            adapter: a.adapter?.kind ?? "echo",
+            session: typeof a.lifecycle === "object" ? a.lifecycle.session : undefined,
+          })),
           peers: this.mesh.directory(),
           grants: this.grants.list(),
+          sessions: this.state.data.sessions,
           channels: this.channels.channelNames(),
+          channelsConfig: this.state.data.channels ?? {},
           audit: this.audit.tail(20),
         })
       }
