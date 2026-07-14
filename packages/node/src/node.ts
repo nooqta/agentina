@@ -30,9 +30,16 @@ export interface AgentinaNodeOptions {
   partyName?: string
   partyKind?: PartyKind
   /** Advertised URL peers use to reach this node (invites embed it).
-   *  Defaults to http://127.0.0.1:<port> — fine for demos, must be a
-   *  routable address (Tailscale/WireGuard/WAN) for real pairing. */
+   *  Defaults to http://<bind>:<port> when bind is a concrete address,
+   *  else http://127.0.0.1:<port> — must be routable
+   *  (Tailscale/WireGuard/WAN) for real cross-machine pairing. */
   url?: string
+  /** Interface to listen on. Default 127.0.0.1 (local-only — demos,
+   *  single-machine). For real collaboration bind the overlay-network
+   *  address (e.g. the Tailscale 100.x IP). Binding wide is safe by
+   *  design: every non-loopback request needs a party token, and the
+   *  console/control surface refuses non-local callers outright. */
+  bind?: string
   adapter?: AgentAdapter
   /** Exempt loopback callers from party auth (local CLI / console).
    *  Default true; set false on shared hosts — control endpoints then
@@ -55,12 +62,15 @@ export class AgentinaNode {
   private log: (...args: unknown[]) => void
   private trustLoopback: boolean
   readonly port: number
+  readonly bind: string
 
   constructor(opts: AgentinaNodeOptions) {
     this.port = opts.port
+    this.bind = opts.bind ?? "127.0.0.1"
     this.trustLoopback = opts.trustLoopback !== false
     this.log = opts.log ?? console.error.bind(console, "[agentina]")
-    const url = opts.url ?? `http://127.0.0.1:${opts.port}`
+    const advertisable = this.bind !== "127.0.0.1" && this.bind !== "0.0.0.0" && this.bind !== "::"
+    const url = opts.url ?? `http://${advertisable ? this.bind : "127.0.0.1"}:${opts.port}`
     this.state = new NodeState(opts.stateDir, {
       partyName: opts.partyName ?? "unnamed-party",
       partyKind: opts.partyKind,
@@ -157,7 +167,7 @@ export class AgentinaNode {
     })
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject)
-      this.server!.listen(this.port, "127.0.0.1", resolve)
+      this.server!.listen(this.port, this.bind, resolve)
     })
     await this.mesh.start()
     // Channel startup failures (bad token, unreachable API) must not

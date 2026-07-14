@@ -39,10 +39,12 @@ Built on the Linux Foundation's [A2A protocol](https://github.com/a2aproject/A2A
 
 ## How it works
 
+> **First time? Start with [Tutorial 00 — install + connect two machines, free](docs/tutorials/00-install-and-network.md)** (Tailscale free plan / headscale / WireGuard — agentina only needs "an IP that answers"). The security model is documented in [SECURITY.md](SECURITY.md).
+
 ```bash
-# Party A (the freelancer)
+# Party A (the freelancer) — bind your overlay-network IP so B can reach you
 agentina init --name "Amal"
-agentina start
+agentina start --bind 100.84.12.7     # tailscale ip -4; omit --bind for local-only demos
 agentina invite                       # → agentina://join/… (one-time, 15 min)
 
 # Party B (the client), on their own machine

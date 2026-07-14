@@ -64,7 +64,9 @@ const HELP = `agentina — agent collaboration across trust boundaries
 
 Usage:
   agentina init   [--state <dir>] [--name <party>] [--port <n>] [--url <reachable-url>]
-  agentina start  [--state <dir>] [--port <n>] [--url <reachable-url>]
+  agentina start  [--state <dir>] [--port <n>] [--bind <ip>] [--url <reachable-url>]
+                  (--bind your Tailscale/VPN IP so the other party can reach you;
+                   default 127.0.0.1 is local-only — see docs/tutorials/00-install-and-network.md)
   agentina invite [--port <n>]            mint a one-time pairing link
   agentina join <link> [--port <n>]       redeem a pairing link from another party
   agentina test <peer> [--port <n>]       authenticated connection test
@@ -101,14 +103,16 @@ async function main(): Promise<void> {
     }
 
     case "start": {
+      const bind = typeof flags.bind === "string" ? flags.bind : undefined
       const node = new AgentinaNode({
         stateDir,
         port,
+        bind,
         url: typeof flags.url === "string" ? flags.url : undefined,
         log: console.error.bind(console, "[agentina]"),
       })
       await node.start()
-      console.log(`agentina node up — party "${node.party.name}" on 127.0.0.1:${port}`)
+      console.log(`agentina node up — party "${node.party.name}" on ${bind ?? "127.0.0.1"}:${port}`)
       console.log(`Console: http://127.0.0.1:${port}/`)
       console.log(`Pair another party: agentina invite  (or use the console)`)
       const shutdown = () => { void node.stop().then(() => process.exit(0)) }

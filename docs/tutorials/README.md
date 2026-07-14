@@ -4,6 +4,7 @@
 
 | # | Tutorial | Feature | Length |
 |---|---|---|---|
+| 00 | [Install + connect two machines — free](00-install-and-network.md) | install, Tailscale/headscale/WireGuard, `--bind` | ~10 min |
 | 01 | [Pair two parties in 3 minutes](01-pair-two-parties.md) | invites, directional credentials, connection test | ~4 min |
 | 02 | [Grant a freelancer access to one folder — and nothing else](02-grants-scoped-access.md) | grants, fs scopes, revocation, audit | ~6 min |
 | 03 | [The console: run a collaboration without touching a terminal](03-web-console.md) | web console | ~5 min |
