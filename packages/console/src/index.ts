@@ -15,47 +15,67 @@ export const CONSOLE_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentina console</title>
 <style>
+  /* agentx design language: oklch dark surfaces, mint accent, IBM Plex,
+     13px density. Tokens mirror agentx src/daemon/ui/tokens.ts. */
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel-2: #1d212b; --line: #262b37;
-    --ink: #e8e6e0; --ink-dim: #9aa0ad; --accent: #e8a87c; --accent-2: #7cc4e8;
-    --ok: #7ee2a8; --bad: #f08c8c; --warn: #e8d47c;
-    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --ax-bg: oklch(0.16 0.010 265);
+    --ax-bg-elev: oklch(0.19 0.012 265);
+    --ax-surface: oklch(0.21 0.012 265);
+    --ax-surface-2: oklch(0.24 0.014 265);
+    --ax-surface-3: oklch(0.27 0.016 265);
+    --ax-border: oklch(0.29 0.014 265);
+    --ax-border-2: oklch(0.35 0.016 265);
+    --ax-text: oklch(0.95 0.005 265);
+    --ax-text-2: oklch(0.80 0.008 265);
+    --ax-muted: oklch(0.60 0.010 265);
+    --ax-accent: oklch(0.78 0.13 165);
+    --ax-accent-2: oklch(0.55 0.11 165);
+    --ax-warn: oklch(0.80 0.14 75);
+    --ax-err: oklch(0.68 0.19 25);
+    --ax-info: oklch(0.78 0.10 220);
+    --ax-radius: 6px;
+    --ax-radius-lg: 8px;
+    --ax-font: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+    --ax-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, "Segoe UI", Inter, sans-serif; padding-bottom: 60px; }
-  a { color: var(--accent-2); }
-  header { display:flex; align-items:baseline; gap:14px; padding: 22px 28px 14px; border-bottom: 1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size: 19px; letter-spacing: .3px; }
-  header h1 span { color: var(--accent); }
-  #party-name { font-weight: 600; }
-  .chip { font: 11.5px var(--mono); color: var(--ink-dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 20px; padding: 2px 10px; }
-  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; padding: 22px 28px; max-width: 1400px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
-  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--ink-dim); margin-bottom: 14px; }
-  .card h2 b { color: var(--accent); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-  input, select { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 14px; flex: 1; min-width: 0; }
-  input:focus, select:focus { outline: 1px solid var(--accent); }
-  button { background: var(--accent); color: #1a130d; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
-  button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
-  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+  body { background: var(--ax-bg); color: var(--ax-text); font: 13px/1.6 var(--ax-font); padding-bottom: 60px; }
+  a { color: var(--ax-info); }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--ax-border); background: var(--ax-bg-elev); flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 14px; font-weight: 600; letter-spacing: .2px; margin-right: 4px; }
+  header h1 span { color: var(--ax-accent); }
+  #party-name { font-weight: 600; color: var(--ax-text-2); }
+  .chip { font: 10.5px var(--ax-mono); color: var(--ax-muted); background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: 999px; padding: 1px 9px; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; padding: 16px 18px; max-width: 1400px; }
+  .card { background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: var(--ax-radius-lg); padding: 14px 16px; }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ax-muted); margin-bottom: 12px; font-weight: 600; }
+  .card h2 b { color: var(--ax-accent); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  input, select { background: var(--ax-bg-elev); color: var(--ax-text); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 6px 9px; font: 12.5px var(--ax-font); flex: 1; min-width: 0; }
+  input:focus, select:focus { outline: none; border-color: var(--ax-accent-2); }
+  button { background: var(--ax-accent); color: oklch(0.16 0.02 165); border: 0; border-radius: var(--ax-radius); padding: 6px 12px; font: 600 12px var(--ax-font); cursor: pointer; white-space: nowrap; }
+  button:hover { filter: brightness(1.08); }
+  button.ghost { background: var(--ax-surface-2); color: var(--ax-text-2); border: 1px solid var(--ax-border-2); }
+  button.danger { background: transparent; color: var(--ax-err); border: 1px solid var(--ax-err); }
   button:disabled { opacity: .45; cursor: default; }
-  .list { display: flex; flex-direction: column; gap: 8px; }
-  .item { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-  .item .meta { font: 12px var(--mono); color: var(--ink-dim); }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
-  .st-active { color: var(--ok); } .st-proposed { color: var(--warn); } .st-revoked { color: var(--ink-dim); }
-  .feed { font: 12.5px var(--mono); display: flex; flex-direction: column; gap: 5px; max-height: 340px; overflow-y: auto; }
-  .feed .denied { color: var(--bad); }
-  .feed .allowed { color: var(--ink-dim); }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .item { background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 7px 10px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .item .meta { font: 11px var(--ax-mono); color: var(--ax-muted); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  .dot.ok { background: var(--ax-accent); box-shadow: 0 0 6px var(--ax-accent-2); }
+  .dot.bad { background: var(--ax-err); }
+  .st-active { color: var(--ax-accent); } .st-proposed { color: var(--ax-warn); } .st-revoked { color: var(--ax-muted); }
+  .feed { font: 11.5px var(--ax-mono); display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
+  .feed .denied { color: var(--ax-err); }
+  .feed .allowed { color: var(--ax-muted); }
   .feed .ts { opacity: .55; margin-right: 6px; }
-  .invite-out { font: 12px var(--mono); background: var(--panel-2); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; word-break: break-all; margin-top: 8px; display: none; }
-  .hint { font-size: 12.5px; color: var(--ink-dim); margin-top: 6px; }
-  .reply { font: 13px var(--mono); background: var(--panel-2); border-left: 3px solid var(--accent-2); border-radius: 6px; padding: 10px; margin-top: 10px; white-space: pre-wrap; display: none; }
-  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--accent); color: var(--ink); border-radius: 10px; padding: 10px 18px; font-size: 14px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 80vw; }
+  .invite-out { font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px dashed var(--ax-accent-2); border-radius: var(--ax-radius); padding: 9px; word-break: break-all; margin-top: 8px; display: none; }
+  .hint { font-size: 11.5px; color: var(--ax-muted); margin-top: 4px; }
+  .reply { font: 12px var(--ax-mono); background: var(--ax-bg-elev); border-left: 3px solid var(--ax-info); border-radius: var(--ax-radius); padding: 9px; margin-top: 8px; white-space: pre-wrap; display: none; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ax-surface-3); border: 1px solid var(--ax-accent-2); color: var(--ax-text); border-radius: var(--ax-radius-lg); padding: 8px 16px; font-size: 12.5px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 80vw; }
   #toast.show { opacity: 1; }
-  label.mode { display: flex; gap: 4px; align-items: center; font-size: 13px; color: var(--ink-dim); }
+  label.mode { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--ax-muted); }
 </style>
 </head>
 <body>
