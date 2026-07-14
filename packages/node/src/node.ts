@@ -16,6 +16,9 @@ import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
 import { listSkillNames } from "./skills"
+import { detectEnvironment, type Environment } from "./environment"
+import { suggestDirs } from "./fs-suggest"
+import { SCENARIOS } from "./scenarios"
 
 // --- AgentinaNode: one party's node ---
 //
@@ -69,6 +72,7 @@ export class AgentinaNode {
   private trustLoopback: boolean
   private sessionSweeper?: ReturnType<typeof setInterval>
   private sessionSweepMsOpt: number
+  private environment: Environment = detectEnvironment()
   readonly port: number
   readonly bind: string
 
@@ -189,6 +193,12 @@ export class AgentinaNode {
     this.sweepSessions() // reap anything that expired while the node was down
     this.sessionSweeper = setInterval(() => this.sweepSessions(), this.sessionSweepMsOpt)
     this.sessionSweeper.unref?.()
+    // The ENOENT footgun, caught at startup instead of mid-conversation:
+    // AI agents configured but no runtime on PATH.
+    const aiAgents = this.state.data.agents.filter((a) => a.adapter?.kind === "claude-code")
+    if (aiAgents.length && !this.environment.ai.claude.found) {
+      this.log(`[environment] ${aiAgents.length} AI assistant(s) configured but Claude isn't installed — they will fail until it is. Install: ${this.environment.ai.installCommand}`)
+    }
     this.log(`node up — party "${this.party.name}" (${this.party.id}) on 127.0.0.1:${this.port}`)
   }
 
@@ -790,6 +800,43 @@ export class AgentinaNode {
         return this.json(res, 201, offer)
       }
 
+      case "GET /agentina/v1/scenarios": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        return this.json(res, 200, { scenarios: SCENARIOS })
+      }
+
+      case "POST /agentina/v1/environment/refresh": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        this.environment = detectEnvironment()
+        return this.json(res, 200, { environment: this.environment })
+      }
+
+      case "GET /agentina/v1/fs/suggest": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const url = new URL(req.url ?? "/", "http://x")
+        const dirs = suggestDirs(url.searchParams.get("path") ?? "")
+        // Recent workspaces from agents + folder shares make the best quick picks.
+        const recent = new Set<string>()
+        for (const a of this.state.data.agents) if (a.adapter?.baseRoot) recent.add(a.adapter.baseRoot)
+        for (const g of this.grants.list()) for (const sc of g.scopes) if (sc.kind === "fs") recent.add(sc.root)
+        return this.json(res, 200, {
+          dirs,
+          quickPicks: [
+            ...Array.from(recent).slice(-4).map((p) => ({ label: p.split("/").pop() || p, path: p })),
+            ...this.environment.quickPicks,
+          ],
+        })
+      }
+
+      case "POST /agentina/v1/ui": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const mode = body.mode === "advanced" ? "advanced" : "simple"
+        this.state.data.ui = { mode }
+        this.state.save()
+        return this.json(res, 200, { mode })
+      }
+
       // "What am I allowed to do at this peer?" — fetch the grants the
       // counterparty extended to US (their node answers with exactly
       // that, party-scoped), plus their advertised agents. This is what
@@ -878,6 +925,8 @@ export class AgentinaNode {
           sessions: this.state.data.sessions,
           channels: this.channels.channelNames(),
           channelsConfig: this.state.data.channels ?? {},
+          environment: this.environment,
+          ui: this.state.data.ui ?? { mode: "simple" },
           audit: this.audit.tail(20),
         })
       }

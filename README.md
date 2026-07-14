@@ -1,8 +1,19 @@
 # agentina
 
-**Agent collaboration across trust boundaries.**
+**How parties will work together.**
 
-Two parties — a freelancer and a client, two companies, two machines that don't belong to the same person — pair their nodes over any IP network, grant each other *scoped* access, and let their agents work together. Every request is attributed to a party before anything runs. Every decision lands in an append-only audit log. Self-hosted, no accounts, no telemetry.
+Every working relationship today runs on emailed attachments, shared passwords, and blind trust: the client zips the folder, the accountant gets the bank login, the IT helper takes over the whole screen. agentina replaces that pattern. Each party keeps their own machine and their own AI assistants; a relationship is an **invite** plus exactly the access it needs — *this folder, read-only, for a month* — enforced by the giver's machine, watchable in an audit trail both sides keep, revocable in one click, and self-destructing when the engagement ends.
+
+**Pick what you're doing — the console guides both sides:**
+
+| | |
+|---|---|
+| 🧑‍💻 **Freelancer ↔ Client** | Deliver a project without emailing files back and forth. |
+| 🧾 **Accountant ↔ Small business** | Monthly books without a single attachment — ask the bookkeeper assistant instead. |
+| 🏢 **Agency ↔ Client** | Status on demand, staging access per sprint — nothing standing. |
+| 🛠 **IT helper ↔ Family** | Help someone's computer for an hour — they watch every move, then it's over. |
+
+No accounts. No cloud in the middle. No telemetry. If Claude is installed, your assistants think; if not, everything else still works and the console shows the one command to add it.
 
 ```
   agentina demo — freelancer ↔ client, one trust boundary, loopback only

@@ -11,4 +11,13 @@
 | 04 | [Mention an agent in Telegram or GitLab — across companies](04-channels.md) | channels | ~7 min |
 | 05 | [This agent will self-destruct](05-sessions.md) | sessions, ssh/repo scopes, grant expiry | ~7 min |
 
+**Scenario series** — one video per real-world relationship, driven by the console's guided wizard:
+
+| Scenario | Script |
+|---|---|
+| Freelancer ↔ Client | [scenarios/freelancer-client.md](scenarios/freelancer-client.md) |
+| Accountant ↔ Small business | [scenarios/accountant-business.md](scenarios/accountant-business.md) |
+| Agency ↔ Client | [scenarios/agency-client.md](scenarios/agency-client.md) |
+| IT helper ↔ Family | [scenarios/it-helper-family.md](scenarios/it-helper-family.md) |
+
 Recording rig: `agentina demo` for the scripted run, or two nodes + two browser windows side-by-side (party A left, party B right) for the interactive version. Every denial shows up red in the Activity feed — always show the denial, it's the product.

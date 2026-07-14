@@ -36,6 +36,8 @@ export interface NodeStateShape {
   sessions: CollabSession[]
   pendingInvites: PendingInvite[]
   channels?: ChannelsConfig
+  /** Console presentation mode. Simple hides every technical noun. */
+  ui?: { mode: "simple" | "advanced" }
 }
 
 export function newId(prefix: string): string {

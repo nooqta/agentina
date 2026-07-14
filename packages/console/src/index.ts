@@ -135,6 +135,26 @@ export const CONSOLE_HTML = `<!doctype html>
   #advanced input { flex: 1; }
   dialog#dlg-invite { background: var(--ax-surface); color: var(--ax-text); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 22px; width: min(480px, 92vw); }
   dialog::backdrop { background: oklch(0.10 0.01 265 / 0.7); }
+  body.simple .adv-only { display: none !important; }
+  #ai-banner { display: none; gap: 10px; align-items: center; background: var(--ax-surface); border-bottom: 1px solid var(--ax-border); padding: 8px 20px; font-size: 12.5px; color: var(--ax-text-2); }
+  #ai-banner code { font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px solid var(--ax-border); border-radius: 4px; padding: 2px 8px; }
+  .pp-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+  .pp-wrap input { flex: 1; }
+  .pp-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--ax-surface-3); border: 1px solid var(--ax-border-2); border-radius: var(--ax-radius); z-index: 30; max-height: 240px; overflow-y: auto; display: none; box-shadow: 0 8px 24px oklch(0.05 0.01 265 / .5); }
+  .pp-item { padding: 6px 10px; cursor: pointer; font: 12px var(--ax-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pp-item:hover, .pp-item.hi { background: var(--ax-accent-2); }
+  .pp-chips { display: flex; gap: 5px; flex-wrap: wrap; padding: 7px 9px; border-bottom: 1px solid var(--ax-border); }
+  .pp-chip { font: 11px var(--ax-font); background: var(--ax-bg-elev); border: 1px solid var(--ax-border-2); border-radius: 999px; padding: 2px 10px; cursor: pointer; color: var(--ax-text-2); }
+  .pp-chip:hover { border-color: var(--ax-accent); color: var(--ax-accent); }
+  #wizard { display: none; position: fixed; inset: 0; background: oklch(0.10 0.01 265 / 0.75); z-index: 45; align-items: center; justify-content: center; }
+  #wizard .panel { background: var(--ax-surface); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 24px; width: min(640px, 94vw); max-height: 88vh; overflow-y: auto; }
+  .scn-card { border: 1px solid var(--ax-border); border-radius: 10px; padding: 14px; cursor: pointer; margin-bottom: 8px; }
+  .scn-card:hover { border-color: var(--ax-accent); }
+  .scn-card b { display: block; margin-bottom: 2px; }
+  .wiz-step { background: var(--ax-bg-elev); border: 1px solid var(--ax-border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .wiz-step.done { opacity: .55; border-color: var(--ax-accent-2); }
+  .wiz-step .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .wiz-step input, .wiz-step select { flex: 1; }
 </style>
 </head>
 <body>
@@ -142,7 +162,8 @@ export const CONSOLE_HTML = `<!doctype html>
   <h1><span>agentina</span></h1>
   <span class="hint">You are</span><span id="me">…</span>
   <span style="flex:1"></span>
-  <span class="hint mono" id="me-id"></span>
+  <span class="hint mono adv-only" id="me-id"></span>
+  <button class="ghost" id="mode-toggle" style="font-size:11px;padding:4px 10px">Advanced</button>
 </header>
 
 <div id="onboarding">
@@ -161,6 +182,12 @@ export const CONSOLE_HTML = `<!doctype html>
   </div>
 </div>
 
+<div id="ai-banner">
+  <span>🤖 AI assistants aren't available on this machine yet — everything else works. Install once:</span>
+  <code id="ai-cmd"></code>
+  <button class="ghost" id="ai-copy" style="font-size:11px;padding:3px 9px">Copy</button>
+  <button class="ghost" id="ai-recheck" style="font-size:11px;padding:3px 9px">I installed it — check again</button>
+</div>
 <div id="app">
   <div id="sidebar">
     <div id="contacts"></div>
@@ -175,6 +202,7 @@ export const CONSOLE_HTML = `<!doctype html>
       <span class="dot ok" id="c-dot"></span>
       <h2 id="c-name">…</h2>
       <button class="link" id="c-test">test connection</button>
+      <button class="link" id="c-wizard">set up a collaboration</button>
       <span style="flex:1"></span>
       <span class="hint mono" id="c-id"></span>
     </div>
@@ -245,6 +273,16 @@ export const CONSOLE_HTML = `<!doctype html>
   </div>
 </div>
 
+<div id="wizard">
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <b id="wiz-title">What are you two doing together?</b>
+      <button class="ghost" id="wiz-close">Close</button>
+    </div>
+    <div id="wiz-body"></div>
+  </div>
+</div>
+
 <div id="myagents" style="display:none;position:fixed;inset:0;background:oklch(0.10 0.01 265 / 0.7);z-index:40;align-items:center;justify-content:center">
   <div class="panel" style="background:var(--ax-surface);border:1px solid var(--ax-border-2);border-radius:14px;padding:22px;width:min(600px,92vw);max-height:86vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -257,17 +295,17 @@ export const CONSOLE_HTML = `<!doctype html>
       <b style="font-size:12.5px">New agent</b>
       <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
         <input id="ag-id" placeholder="name (e.g. coder)" style="max-width:140px;flex:1">
-        <select id="ag-provider" style="max-width:150px">
+        <select id="ag-provider" class="adv-only" style="max-width:150px">
           <option value="claude-code">Claude (CLI)</option>
           <option value="scoped-fs">files only (no AI)</option>
         </select>
-        <input id="ag-model" placeholder="model (optional)" style="max-width:140px;flex:1">
+        <input id="ag-model" class="adv-only" placeholder="model (optional)" style="max-width:140px;flex:1">
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="ag-workspace" placeholder="workspace folder, e.g. /home/me/projects/acme" style="flex:1">
+        <input id="ag-workspace" placeholder="which folder does it work in?" style="flex:1">
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="ag-prompt" placeholder="personality / instructions (optional) — e.g. You are Acme&#39;s frontend specialist…" style="flex:1">
+        <input id="ag-prompt" placeholder="what should it help with? e.g. answer questions about the Acme project" style="flex:1">
       </div>
       <button id="ag-create">Create agent</button>
     </div>
@@ -341,6 +379,8 @@ export const CONSOLE_HTML = `<!doctype html>
     renderAsk();
     renderShares();
     renderFeed();
+    applyEnvironment(s.environment);
+    if (!state.modeApplied) { state.modeApplied = true; applyMode((s.ui && s.ui.mode) || "simple"); }
     $("adv-node").textContent = s.url + " · " + s.protocol + " · agents: " +
       (s.agents || []).filter(function (a) { return a.id !== "echo"; }).map(function (a) { return a.id; }).join(", ");
     $("adv-ch-active").textContent = (s.channels && s.channels.length) ? "Active: " + s.channels.join(", ") : "None running.";
@@ -411,7 +451,7 @@ export const CONSOLE_HTML = `<!doctype html>
     var bar = $("askbar");
     if (!agents.length) {
       emptyEl.style.display = "block";
-      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side — ask them to open their console, pick you, and hit <b>Share</b>. The moment they do, it appears here.";
+      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side. Want a guided start for both of you? <button class='link' onclick='document.getElementById(\"c-wizard\").click()'>Pick what you're doing together</button>";
       bar.style.display = "none";
       $("thread").style.display = "none";
       return;
@@ -636,6 +676,7 @@ export const CONSOLE_HTML = `<!doctype html>
     $("dlg-invite").showModal();
     makeInvite($("dlg-invite-link"), null);
   };
+  $("c-wizard").onclick = function () { openWizard(); };
   $("c-test").onclick = function () {
     api("POST", "/test", { peer: state.selected }).then(function (r) {
       toast("✓ " + r.party.name + " answered in " + r.latencyMs + "ms");
@@ -659,6 +700,217 @@ export const CONSOLE_HTML = `<!doctype html>
     api("POST", "/channels", { kind: "gitlab", host: host, tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start GitLab"); })
       .catch(function (e) { toast("⛔ " + e.message); });
   };
+
+  // ---------- Simple/Advanced mode ----------
+  function applyMode(mode) {
+    document.body.classList.toggle("simple", mode !== "advanced");
+    $("mode-toggle").textContent = mode === "advanced" ? "Simple view" : "Advanced";
+  }
+  $("mode-toggle").onclick = function () {
+    var next = document.body.classList.contains("simple") ? "advanced" : "simple";
+    applyMode(next);
+    api("POST", "/ui", { mode: next }).catch(function () {});
+  };
+
+  // ---------- environment: AI available or one-command install ----------
+  function applyEnvironment(env) {
+    if (!env) return;
+    var ready = env.ai && env.ai.claude && env.ai.claude.found;
+    $("ai-banner").style.display = ready ? "none" : "flex";
+    if (!ready) $("ai-cmd").textContent = env.ai.installCommand;
+    state.aiReady = Boolean(ready);
+    state.env = env;
+  }
+  $("ai-copy").onclick = function () {
+    if (navigator.clipboard) navigator.clipboard.writeText($("ai-cmd").textContent).then(function () { toast("Copied — paste it in a terminal"); });
+  };
+  $("ai-recheck").onclick = function () {
+    api("POST", "/environment/refresh").then(function (r) {
+      applyEnvironment(r.environment);
+      toast(r.environment.ai.claude.found ? "✓ Found it — AI assistants are ready" : "Still not found — did the install finish?");
+    }).catch(function (e) { toast("⛔ " + e.message); });
+  };
+
+  // ---------- path picker: OS-feel directory autocomplete ----------
+  function attachPathPicker(input) {
+    if (input.dataset.pp) return;
+    input.dataset.pp = "1";
+    var wrap = document.createElement("div");
+    wrap.className = "pp-wrap";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    var drop = document.createElement("div");
+    drop.className = "pp-drop";
+    wrap.appendChild(drop);
+    var timer = null;
+    function close() { drop.style.display = "none"; }
+    function open() { drop.style.display = "block"; }
+    function load() {
+      api("GET", "/fs/suggest?path=" + encodeURIComponent(input.value)).then(function (r) {
+        drop.innerHTML = "";
+        if (!input.value.trim() && (r.quickPicks || []).length) {
+          var chips = document.createElement("div");
+          chips.className = "pp-chips";
+          r.quickPicks.forEach(function (q) {
+            var c = document.createElement("span");
+            c.className = "pp-chip";
+            c.textContent = q.label;
+            c.onclick = function () { input.value = q.path; load(); input.focus(); };
+            chips.appendChild(c);
+          });
+          drop.appendChild(chips);
+        }
+        (r.dirs || []).forEach(function (d) {
+          var item = document.createElement("div");
+          item.className = "pp-item";
+          item.textContent = d;
+          item.onmousedown = function (e) { e.preventDefault(); input.value = d; load(); };
+          drop.appendChild(item);
+        });
+        if (drop.children.length) open(); else close();
+      }).catch(close);
+    }
+    input.addEventListener("focus", load);
+    input.addEventListener("input", function () {
+      clearTimeout(timer);
+      timer = setTimeout(load, 200);
+    });
+    input.addEventListener("blur", function () { setTimeout(close, 150); });
+  }
+  ["sh-value", "sh-path", "ag-workspace"].forEach(function (id) {
+    if ($(id)) attachPathPicker($(id));
+  });
+
+  // ---------- scenario wizard ----------
+  var wiz = { scenarios: [], scenario: null, role: 0 };
+  function openWizard() {
+    api("GET", "/scenarios").then(function (r) {
+      wiz.scenarios = r.scenarios || [];
+      wiz.scenario = null;
+      renderWizard();
+      $("wizard").style.display = "flex";
+    }).catch(function (e) { toast("⛔ " + e.message); });
+  }
+  $("wiz-close").onclick = function () { $("wizard").style.display = "none"; };
+  $("wizard").onclick = function (e) { if (e.target === $("wizard")) $("wizard").style.display = "none"; };
+  function renderWizard() {
+    var body = $("wiz-body");
+    body.innerHTML = "";
+    if (!wiz.scenario) {
+      $("wiz-title").textContent = "What are you and " + state.selected + " doing together?";
+      wiz.scenarios.forEach(function (s) {
+        var card = document.createElement("div");
+        card.className = "scn-card";
+        card.innerHTML = "<b>" + esc(s.title) + "</b><span class='hint'>" + esc(s.tagline) + "</span>";
+        card.onclick = function () { wiz.scenario = s; wiz.role = -1; renderWizard(); };
+        body.appendChild(card);
+      });
+      return;
+    }
+    if (wiz.role === -1) {
+      $("wiz-title").textContent = wiz.scenario.title + " — which one are you?";
+      wiz.scenario.roles.forEach(function (role, i) {
+        var card = document.createElement("div");
+        card.className = "scn-card";
+        card.innerHTML = "<b>I'm " + esc(role) + "</b>";
+        card.onclick = function () { wiz.role = i; renderWizard(); };
+        body.appendChild(card);
+      });
+      return;
+    }
+    var steps = wiz.scenario.steps[wiz.role];
+    $("wiz-title").textContent = wiz.scenario.title + " — your setup";
+    if (!steps.length) {
+      body.innerHTML = "<div class='hint'>Nothing to set up on your side — <b>" + esc(state.selected) + "</b> does the sharing in this scenario. When they finish, what they shared appears in your <b>Ask them</b> tab.</div>";
+      return;
+    }
+    steps.forEach(function (step, idx) {
+      var div = document.createElement("div");
+      div.className = "wiz-step";
+      div.id = "wiz-step-" + idx;
+      var needsAiBlocked = step.needsAi && !state.aiReady;
+      var needsBlocked = step.needs && state.env && state.env[step.needs] === false;
+      var html = "<b>" + (idx + 1) + ". " + esc(step.title) + "</b>";
+      if (needsAiBlocked) {
+        html += "<div class='hint'>Needs the AI runtime — use the install banner above, then reopen this.</div>";
+        div.innerHTML = html;
+        body.appendChild(div);
+        return;
+      }
+      if (needsBlocked) {
+        html += "<div class='hint'>Not available on this machine (missing " + esc(step.needs) + ").</div>";
+        div.innerHTML = html;
+        body.appendChild(div);
+        return;
+      }
+      div.innerHTML = html;
+      var row = document.createElement("div");
+      row.className = "row";
+      var valueInput = document.createElement("input");
+      valueInput.placeholder = step.defaults.valueHint || "";
+      var needsPath = step.action === "create-agent" || step.action === "share-folder";
+      row.appendChild(valueInput);
+      var durLabel = document.createElement("span");
+      durLabel.className = "hint";
+      if (step.defaults.durationSeconds) {
+        var d = step.defaults.durationSeconds;
+        durLabel.textContent = "for " + (d >= 86400 * 2 ? Math.round(d / 86400) + " days" : d >= 3600 ? Math.round(d / 3600) + " hour(s)" : Math.round(d / 60) + " min") + ", then it stops itself";
+      } else {
+        durLabel.textContent = step.defaults.mode === "rw" ? "read & write, until you stop it" : "read-only, until you stop it";
+      }
+      row.appendChild(durLabel);
+      var go = document.createElement("button");
+      go.textContent = "Do it";
+      go.onclick = function () {
+        go.disabled = true;
+        runStep(step, valueInput.value.trim()).then(function () {
+          div.classList.add("done");
+          go.textContent = "✓ done";
+          loadPeer(state.selected);
+        }).catch(function (e) {
+          toast("⛔ " + e.message);
+          go.disabled = false;
+        });
+      };
+      row.appendChild(go);
+      div.appendChild(row);
+      body.appendChild(div);
+      if (needsPath) attachPathPicker(valueInput);
+    });
+    var done = document.createElement("div");
+    done.className = "hint";
+    done.style.marginTop = "6px";
+    done.textContent = "When these say done, tell " + state.selected + " to pick the same scenario on their side — their steps mirror yours.";
+    body.appendChild(done);
+  }
+  function runStep(step, value) {
+    if (!value && step.action !== "share-agent") return Promise.reject(new Error("fill in the field first"));
+    if (step.action === "create-agent") {
+      return api("POST", "/agents", {
+        id: step.defaults.agentId || "assistant",
+        provider: "claude-code",
+        workspace: value,
+        systemPrompt: step.defaults.agentPrompt,
+      });
+    }
+    if (step.action === "share-agent") {
+      return api("POST", "/shares", {
+        peer: state.selected,
+        kind: "agent",
+        value: step.defaults.agentId || "assistant",
+        mode: step.defaults.mode || "ro",
+        durationSeconds: step.defaults.durationSeconds,
+      });
+    }
+    var kind = step.action.replace("share-", "");
+    return api("POST", "/shares", {
+      peer: state.selected,
+      kind: kind,
+      value: value,
+      mode: step.defaults.mode || "ro",
+      durationSeconds: step.defaults.durationSeconds,
+    });
+  }
 
   // ---------- poll loop ----------
   var lastPeerLoad = 0;

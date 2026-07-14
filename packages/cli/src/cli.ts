@@ -144,6 +144,18 @@ async function main(): Promise<void> {
       await node.start()
       console.log(`agentina node up — party "${node.party.name}" on ${bind ?? "127.0.0.1"}:${port}`)
       console.log(`Console: http://127.0.0.1:${port}/`)
+      {
+        const s = await control(port, "GET", "/agentina/v1/status").catch(() => null)
+        const env = s?.environment
+        if (env) {
+          const ai = env.ai.claude.found ? `AI ready (${env.ai.claude.version ?? "claude"})` : "AI not installed (folder/server/repo sharing still works)"
+          const net = env.network.tailscale.ip ? `tailscale ${env.network.tailscale.ip}` : "no overlay network detected"
+          console.log(`Machine:  ${ai} · ${net}`)
+          if (!bind && env.network.tailscale.ip) {
+            console.log(`Tip: restart with --bind ${env.network.tailscale.ip} so other parties can reach you`)
+          }
+        }
+      }
       console.log(`Pair another party: agentina invite  (or use the console)`)
       const shutdown = () => { void node.stop().then(() => process.exit(0)) }
       process.on("SIGINT", shutdown)
@@ -325,6 +337,19 @@ async function main(): Promise<void> {
       if (!positional[0]) throw new Error("Usage: agentina revoke <grant-id>")
       await control(port, "POST", "/agentina/v1/grants/revoke", { id: positional[0] })
       console.log(`Revoked ${positional[0]} — the party's next call is denied`)
+      return
+    }
+
+    case "scenarios": {
+      const { scenarios } = await control(port, "GET", "/agentina/v1/scenarios")
+      for (const s of scenarios) {
+        console.log(`\n${s.title} — ${s.tagline}`)
+        s.roles.forEach((role: string, i: number) => {
+          const steps = s.steps[i]
+          console.log(`  as ${role}: ${steps.length ? steps.map((st: any) => st.title).join(" → ") : "nothing to set up — the other side shares"}`)
+        })
+      }
+      console.log(`\nRun any of these guided from the console: http://127.0.0.1:${port}/`)
       return
     }
 
