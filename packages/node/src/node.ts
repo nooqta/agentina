@@ -627,6 +627,33 @@ export class AgentinaNode {
         return this.json(res, 201, offer)
       }
 
+      // "What am I allowed to do at this peer?" — fetch the grants the
+      // counterparty extended to US (their node answers with exactly
+      // that, party-scoped), plus their advertised agents. This is what
+      // makes the console legible from the asking side.
+      case "GET /agentina/v1/peer-grants": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const url = new URL(req.url ?? "/", "http://x")
+        const peerName = url.searchParams.get("peer") ?? ""
+        const peer = this.state.data.peers.find((p) => p.name === peerName)
+        if (!peer) return this.json(res, 404, { error: `Unknown peer: ${peerName}` })
+        let grantedToMe: unknown[] = []
+        try {
+          const r = await fetch(`${peer.url}/agentina/v1/grants`, {
+            headers: peer.token ? { Authorization: `Bearer ${peer.token}` } : {},
+            signal: AbortSignal.timeout(10_000),
+          })
+          if (r.ok) grantedToMe = ((await r.json()) as { grants?: unknown[] }).grants ?? []
+        } catch { /* peer unreachable — return what we know */ }
+        const dir = this.mesh.directory().find((p) => p.peer === peerName)
+        return this.json(res, 200, {
+          peer: peerName,
+          healthy: dir?.healthy ?? false,
+          agents: dir?.skills ?? [],
+          grantedToMe,
+        })
+      }
+
       case "POST /agentina/v1/task": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)

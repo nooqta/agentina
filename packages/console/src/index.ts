@@ -87,6 +87,7 @@ export const CONSOLE_HTML = `<!doctype html>
 <body>
 <header>
   <h1><span>agentina</span> console</h1>
+  <span style="color:var(--ax-muted)">You are</span>
   <span id="party-name">…</span>
   <span class="chip" id="party-id"></span>
   <span class="chip" id="proto"></span>
@@ -145,9 +146,11 @@ export const CONSOLE_HTML = `<!doctype html>
   </section>
 
   <section class="card">
-    <h2><b>4</b> · Send a task</h2>
-    <div class="row"><select id="t-peer"></select><input id="t-agent" placeholder="agent (e.g. files)" style="max-width:130px"></div>
-    <div class="row"><input id="t-msg" placeholder='e.g. "read brief.txt" or "list"'><button id="btn-task">Send</button></div>
+    <h2><b>4</b> · Ask a peer's agents <span style="text-transform:none">(their machine, their rules)</span></h2>
+    <div class="hint" style="margin-bottom:8px">A task is a message to ONE agent on the other party's machine. What it may touch is whatever THEY granted you — nothing else. Their agents guard their resources; yours guard yours.</div>
+    <div class="row"><select id="t-peer"></select><select id="t-agent"></select></div>
+    <div class="list" id="t-granted" style="margin-bottom:8px"></div>
+    <div class="row"><input id="t-msg" placeholder="pick an agent first"><button id="btn-task">Ask</button></div>
     <div class="reply" id="t-reply"></div>
   </section>
 
@@ -261,6 +264,8 @@ export const CONSOLE_HTML = `<!doctype html>
       fillSelect($(id), peerNames.length ? peerNames : ["— pair first —"], $(id).value);
     });
     fillSelect($("g-agent"), agentIds, $("g-agent").value);
+    // First paint of the "what can I do at this peer" view.
+    if (peerNames.length && !peerGrantsCache[$("t-peer").value]) loadPeerGrants($("t-peer").value);
 
     var agentsEl = $("agents");
     agentsEl.innerHTML = "";
@@ -465,6 +470,84 @@ export const CONSOLE_HTML = `<!doctype html>
       .catch(function (e) { toast("✗ " + e.message); });
   };
 
+  // "What can I actually do here?" — the asking side's view of a peer:
+  // their agents, and the grants THEY extended to us. Cached per peer,
+  // reloaded on selection.
+  var peerGrantsCache = {};
+  var USAGE = {
+    "scoped-fs": 'try: "list" or "read <path>"',
+    "scoped-git": 'try: "branches" or "log 10"',
+    "ssh-exec": "type the command to run on their server",
+    "claude-code": "describe the work in plain language",
+    "echo": "connectivity check — replies with what you send",
+    "session": "",
+  };
+  function agentHint(tags) {
+    for (var i = 0; i < (tags || []).length; i++) {
+      if (USAGE[tags[i]]) return USAGE[tags[i]];
+    }
+    return "";
+  }
+  function loadPeerGrants(peerName) {
+    if (!peerName || peerName.indexOf("—") === 0) return;
+    api("GET", "/peer-grants?peer=" + encodeURIComponent(peerName)).then(function (info) {
+      peerGrantsCache[peerName] = info;
+      renderPeerGrants(info);
+    }).catch(function () { /* peer offline */ });
+  }
+  function renderPeerGrants(info) {
+    if ($("t-peer").value !== info.peer) return;
+    var grantedIds = {};
+    (info.grantedToMe || []).forEach(function (g) {
+      (g.agentIds || []).forEach(function (id) { grantedIds[id] = g; });
+    });
+    // Agent picker = THEIR agents, granted ones first and marked.
+    var sel = $("t-agent");
+    var current = sel.value;
+    sel.innerHTML = "";
+    var agents = (info.agents || []).slice().sort(function (a, b) {
+      return (grantedIds[b.id] ? 1 : 0) - (grantedIds[a.id] ? 1 : 0);
+    });
+    agents.forEach(function (a) {
+      var o = document.createElement("option");
+      o.value = a.id;
+      o.textContent = a.id + (grantedIds[a.id] ? " ✓ granted" : " (not granted — will be denied)");
+      if (a.id === current) o.selected = true;
+      sel.appendChild(o);
+    });
+    var box = $("t-granted");
+    box.innerHTML = "";
+    if (!(info.grantedToMe || []).length) {
+      box.innerHTML = '<div class="hint">⛔ ' + esc(info.peer) + " hasn't granted you anything yet. Grants are made on THEIR console (card 2) — ask them to grant you an agent.</div>";
+      return;
+    }
+    (info.grantedToMe || []).forEach(function (g) {
+      var scopeStr = (g.scopes || []).map(function (sc) {
+        if (sc.kind === "fs") return sc.root + " (" + (sc.mode === "rw" ? "read-write" : "read-only") + ")";
+        if (sc.kind === "ssh") return "server " + sc.user + "@" + sc.host;
+        if (sc.kind === "repo") return "repo " + sc.url;
+        if (sc.kind === "skill") return "skill " + sc.skillId;
+        return sc.kind;
+      }).join(" · ");
+      var div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = '<span>✓ you may use <b>' + esc(g.agentIds.join(", ")) + "</b>" +
+        ' <span class="meta">' + esc(scopeStr || "no resource scopes") + "</span>" +
+        (g.expiresAt ? ' <span class="ttl">' + countdown(g.expiresAt) + "</span>" : "") + "</span>";
+      box.appendChild(div);
+    });
+    updateMsgHint();
+  }
+  function updateMsgHint() {
+    var peer = peerGrantsCache[$("t-peer").value];
+    if (!peer) return;
+    var chosen = ($("t-agent").value || "");
+    var agent = (peer.agents || []).find(function (a) { return a.id === chosen; });
+    $("t-msg").placeholder = agent ? (agentHint(agent.tags) || "your message to " + chosen) : "pick an agent first";
+  }
+  $("t-peer").onchange = function () { loadPeerGrants($("t-peer").value); };
+  $("t-agent").onchange = updateMsgHint;
+
   $("btn-task").onclick = function () {
     var btn = $("btn-task");
     btn.disabled = true;
@@ -479,8 +562,12 @@ export const CONSOLE_HTML = `<!doctype html>
       reply.textContent = r.content;
     }).catch(function (e) {
       reply.style.display = "block";
-      reply.textContent = "✗ " + e.message;
-    }).finally(function () { btn.disabled = false; refresh(); });
+      reply.textContent = "⛔ " + e.message;
+    }).finally(function () {
+      btn.disabled = false;
+      refresh();
+      loadPeerGrants($("t-peer").value); // grants may have changed on their side
+    });
   };
 
   refresh();
