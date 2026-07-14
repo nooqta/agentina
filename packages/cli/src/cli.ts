@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { AgentinaNode } from "@agentina-mesh/node"
+import { AgentinaNode, runMcpBridge } from "@agentina-mesh/node"
 import { runDemo } from "./demo"
 
 // --- agentina CLI: init / start / invite / join / test / status / demo ---
@@ -119,6 +119,12 @@ async function main(): Promise<void> {
   const { stateDir, port } = opt(flags)
 
   switch (cmd) {
+    // Internal: stdio MCP bridge spawned by claude-code agents.
+    case "mcp": {
+      await runMcpBridge(typeof flags["node-port"] === "string" ? Number(flags["node-port"]) : DEFAULT_PORT)
+      return
+    }
+
     case "init": {
       const node = new AgentinaNode({
         stateDir,

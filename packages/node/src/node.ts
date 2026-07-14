@@ -19,6 +19,7 @@ import { listSkillNames } from "./skills"
 import { detectEnvironment, type Environment } from "./environment"
 import { suggestDirs } from "./fs-suggest"
 import { SCENARIOS } from "./scenarios"
+import { ChatLog } from "./chat-log"
 
 // --- AgentinaNode: one party's node ---
 //
@@ -73,6 +74,7 @@ export class AgentinaNode {
   private sessionSweeper?: ReturnType<typeof setInterval>
   private sessionSweepMsOpt: number
   private environment: Environment = detectEnvironment()
+  readonly chat!: ChatLog
   readonly port: number
   readonly bind: string
 
@@ -90,6 +92,7 @@ export class AgentinaNode {
       url,
     })
     this.audit = new JsonlAuditLog(this.state.auditPath())
+    ;(this as { chat: ChatLog }).chat = new ChatLog(opts.stateDir)
     this.credentials = new CredentialStore(this.state.data.credentials, (all) => {
       this.state.data.credentials = all
       this.state.save()
@@ -527,6 +530,12 @@ export class AgentinaNode {
             baseRoot: offer.adapter.baseRoot,
             model: offer.adapter.model,
             systemPrompt: offer.adapter.systemPrompt,
+            // The bridge relaunches this same CLI entry as an MCP stdio
+            // server pointed at this node — the agent gains its owner's
+            // cross-party shares, nothing more.
+            ...(process.argv[1]
+              ? { mcp: { command: process.execPath, args: [process.argv[1], "mcp", "--node-port", String(this.port)] } }
+              : {}),
           })
           break
         case "ssh-exec":
@@ -652,6 +661,14 @@ export class AgentinaNode {
             // ("ask · files — read brief.txt") instead of bare event names.
             detail: String(body.message ?? "").slice(0, 80),
           })
+          // The owner sees what their agents are asked — durable, per contact.
+          if (callerParty !== "local") {
+            this.chat.append(callerParty, {
+              dir: "in", agent: offer.id,
+              text: String(body.message ?? "").slice(0, 2000),
+              reply: result.content.slice(0, 2000),
+            })
+          }
           return this.json(res, 200, { content: result.content })
         } catch (e: any) {
           // Scope denials from the adapter are policy decisions, not crashes —
@@ -849,6 +866,14 @@ export class AgentinaNode {
       // counterparty extended to US (their node answers with exactly
       // that, party-scoped), plus their advertised agents. This is what
       // makes the console legible from the asking side.
+      case "GET /agentina/v1/chat": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const url = new URL(req.url ?? "/", "http://x")
+        const partyId = this.resolvePartyId(url.searchParams.get("peer") ?? "")
+        if (!partyId) return this.json(res, 404, { error: "Unknown peer" })
+        return this.json(res, 200, { entries: this.chat.tail(partyId) })
+      }
+
       case "GET /agentina/v1/peer-grants": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const url = new URL(req.url ?? "/", "http://x")
@@ -880,12 +905,31 @@ export class AgentinaNode {
         // on demand so the operator's first task doesn't race the timer.
         const dir = this.mesh.directory().find((p) => p.peer === peerName)
         if (dir && !dir.healthy) await this.mesh.refreshPeer(peerName)
-        const content = await this.mesh.sendTask(
-          peerName,
-          String(body.message ?? ""),
-          body.agent ? String(body.agent) : undefined,
-        )
-        return this.json(res, 200, { content })
+        const outParty = this.resolvePartyId(peerName)
+        try {
+          const content = await this.mesh.sendTask(
+            peerName,
+            String(body.message ?? ""),
+            body.agent ? String(body.agent) : undefined,
+          )
+          if (outParty) {
+            this.chat.append(outParty, {
+              dir: "out", agent: body.agent ? String(body.agent) : "",
+              text: String(body.message ?? "").slice(0, 2000),
+              reply: content.slice(0, 2000),
+            })
+          }
+          return this.json(res, 200, { content })
+        } catch (e: any) {
+          if (outParty) {
+            this.chat.append(outParty, {
+              dir: "out", agent: body.agent ? String(body.agent) : "",
+              text: String(body.message ?? "").slice(0, 2000),
+              error: String(e?.message ?? e).slice(0, 500),
+            })
+          }
+          throw e
+        }
       }
 
       case "POST /agentina/v1/test": {

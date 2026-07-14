@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process"
-import { resolve } from "node:path"
+import { writeFileSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { resolve, join } from "node:path"
 import type { Scope, AgentOffer } from "@agentina-mesh/protocol"
 import type { AgentAdapter, AdapterTask } from "../adapter"
 import { loadSkillsText } from "../skills"
@@ -23,7 +25,30 @@ const RW_TOOLS = [...RO_TOOLS, "Write", "Edit"]
 const TURN_TIMEOUT_MS = 10 * 60 * 1000
 
 export class ClaudeCodeAdapter implements AgentAdapter {
-  constructor(private opts: { binary?: string; model?: string; baseRoot?: string; systemPrompt?: string } = {}) {}
+  private mcpConfigPath?: string
+
+  constructor(private opts: {
+    binary?: string
+    model?: string
+    baseRoot?: string
+    systemPrompt?: string
+    /** Launch spec for the agentina MCP bridge — gives the agent
+     *  list_peer_shares / ask_peer, i.e. everything its OWNER was
+     *  granted by other parties. Omit to run the agent isolated. */
+    mcp?: { command: string; args: string[] }
+  } = {}) {}
+
+  private ensureMcpConfig(): string | undefined {
+    if (!this.opts.mcp) return undefined
+    if (!this.mcpConfigPath) {
+      const dir = mkdtempSync(join(tmpdir(), "agentina-mcp-"))
+      this.mcpConfigPath = join(dir, "mcp.json")
+      writeFileSync(this.mcpConfigPath, JSON.stringify({
+        mcpServers: { agentina: { command: this.opts.mcp.command, args: this.opts.mcp.args } },
+      }))
+    }
+    return this.mcpConfigPath
+  }
 
   async execute(offer: AgentOffer, task: AdapterTask): Promise<{ content: string }> {
     const fsScopes = (task.policy?.scopes ?? []).filter(
@@ -52,11 +77,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // the granted cwd — skills belong to the owner, the jail belongs to
     // the grant).
     const skillsText = loadSkillsText(resolve(this.opts.baseRoot ?? cwd))
-    const appendParts = [this.opts.systemPrompt?.trim(), skillsText].filter(Boolean)
+    const mcpConfig = this.ensureMcpConfig()
+    const bridgeHint = mcpConfig
+      ? "You have agentina tools: use list_peer_shares to see what other parties currently share with your owner, and ask_peer to use those shares (read shared folders, query shared agents). When asked about something another party shared, CHECK with list_peer_shares before saying you can't see it."
+      : undefined
+    const appendParts = [this.opts.systemPrompt?.trim(), bridgeHint, skillsText].filter(Boolean)
+    if (mcpConfig) tools = [...tools, "mcp__agentina__list_peer_shares", "mcp__agentina__ask_peer"]
     const args = [
       "-p", task.message,
       "--output-format", "json",
       "--allowedTools", tools.join(","),
+      ...(mcpConfig ? ["--mcp-config", mcpConfig] : []),
       ...(appendParts.length ? ["--append-system-prompt", appendParts.join("\n\n")] : []),
       ...(this.opts.model ? ["--model", this.opts.model] : []),
     ]

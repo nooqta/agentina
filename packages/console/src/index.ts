@@ -109,6 +109,8 @@ export const CONSOLE_HTML = `<!doctype html>
   .bubble.me { align-self: flex-end; background: var(--ax-accent-2); color: var(--ax-text); border-bottom-right-radius: 3px; }
   .bubble.them { align-self: flex-start; background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-bottom-left-radius: 3px; font-family: var(--ax-mono); font-size: 12px; }
   .bubble.err { align-self: flex-start; background: none; border: 1px solid var(--ax-err); color: var(--ax-err); }
+  .bubble.in { align-self: center; max-width: 92%; background: none; border: 1px dashed var(--ax-border-2); color: var(--ax-muted); font-size: 11.5px; }
+  .bubble.in b { color: var(--ax-text-2); }
   #askbar { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--ax-border); }
   #askbar input { flex: 1; }
   .empty { color: var(--ax-muted); text-align: center; margin: auto; max-width: 380px; }
@@ -421,6 +423,10 @@ export const CONSOLE_HTML = `<!doctype html>
       state.shares[name] = r.shares || [];
       if (state.selected === name) { renderShares(); }
     }).catch(function () { /* */ });
+    api("GET", "/chat?peer=" + encodeURIComponent(name)).then(function (r) {
+      state.threads[name] = r.entries || [];
+      if (state.selected === name) { renderThread(); }
+    }).catch(function () { /* */ });
   }
 
   // ---------- Ask tab: a conversation with their agents ----------
@@ -484,16 +490,35 @@ export const CONSOLE_HTML = `<!doctype html>
   function renderThread() {
     var el = $("thread");
     el.innerHTML = "";
-    var msgs = state.threads[state.selected] || [];
-    if (!msgs.length) {
-      el.innerHTML = '<div class="empty" style="margin:auto">This is where replies appear. Pick what to use above, then ask.</div>';
+    var entries = state.threads[state.selected] || [];
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty" style="margin:auto">This is where the conversation lives — it survives refreshes, and you also see what they ask YOUR agents. Pick what to use above, then ask.</div>';
       return;
     }
-    msgs.forEach(function (m) {
-      var b = document.createElement("div");
-      b.className = "bubble " + m.who;
-      b.textContent = m.text;
-      el.appendChild(b);
+    entries.forEach(function (m) {
+      if (m.pending) {
+        var pb = document.createElement("div");
+        pb.className = "bubble me";
+        pb.textContent = m.text;
+        el.appendChild(pb);
+        return;
+      }
+      if (m.dir === "out") {
+        var me = document.createElement("div");
+        me.className = "bubble me";
+        me.textContent = m.text;
+        el.appendChild(me);
+        var resp = document.createElement("div");
+        resp.className = "bubble " + (m.error ? "err" : "them");
+        resp.textContent = m.error ? "⛔ " + m.error : m.reply;
+        el.appendChild(resp);
+      } else {
+        var inb = document.createElement("div");
+        inb.className = "bubble in";
+        inb.innerHTML = "<b>" + esc(state.selected) + "</b> asked your <b>" + esc(m.agent) + "</b>: " + esc(m.text) +
+          (m.reply ? "<br>↳ " + esc(m.reply.slice(0, 300)) : "");
+        el.appendChild(inb);
+      }
     });
     el.scrollTop = el.scrollHeight;
   }
@@ -503,16 +528,13 @@ export const CONSOLE_HTML = `<!doctype html>
     if (!text) return;
     var agent = state.chip[name];
     state.threads[name] = state.threads[name] || [];
-    state.threads[name].push({ who: "me", text: text });
+    state.threads[name].push({ pending: true, text: text });
     $("ask-input").value = "";
     renderThread();
-    api("POST", "/task", { peer: name, agent: agent, message: text }).then(function (r) {
-      state.threads[name].push({ who: "them", text: r.content });
-      renderThread();
-    }).catch(function (e) {
-      state.threads[name].push({ who: "err", text: "⛔ " + e.message });
-      renderThread();
-      loadPeer(name); // a denial usually means grants changed
+    api("POST", "/task", { peer: name, agent: agent, message: text }).then(function () {
+      loadPeer(name); // the durable log now holds ask + reply
+    }).catch(function () {
+      loadPeer(name); // errors are logged too — reload shows the ⛔
     });
   }
   $("ask-send").onclick = sendAsk;
