@@ -94,7 +94,7 @@ Usage:
   agentina invite [--port <n>]            mint a one-time pairing link
   agentina join <link> [--port <n>]       redeem a pairing link from another party
   agentina test <peer> [--port <n>]       authenticated connection test
-  agentina task <peer> <message…> [--agent <id>] [--port <n>]
+  agentina ask <peer> <message…> [--agent <id>] [--port <n>]   ask another party's agent (within what they granted you)
   agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
   agentina channel telegram --token-env <VAR> [--chats <id,id…>]
   agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
@@ -170,9 +170,10 @@ async function main(): Promise<void> {
       return
     }
 
-    case "task": {
+    case "ask":
+    case "task": { // "task" kept as a hidden alias
       const [peer, ...words] = positional
-      if (!peer || words.length === 0) throw new Error("Usage: agentina task <peer> <message…> [--agent <id>]")
+      if (!peer || words.length === 0) throw new Error("Usage: agentina ask <peer> <message…> [--agent <id>]")
       // Route through the node's mesh so health-gating and peer tokens apply.
       const result = await control(port, "POST", "/agentina/v1/task", {
         peer,

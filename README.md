@@ -58,8 +58,8 @@ agentina grant --to "Amal" --agent files --fs ./project-docs --mode ro
 agentina grants                       # list / audit what you've extended
 agentina revoke gr_…                  # ends it instantly
 
-# The freelancer works within the grant:
-agentina task "Badis" read brief.txt --agent files
+# The freelancer asks the client's agent (within what was granted):
+agentina ask "Badis" read brief.txt --agent files
 ```
 
 ## Channels — talk to the mesh where you already are

@@ -162,7 +162,6 @@ export const CONSOLE_HTML = `<!doctype html>
       <option value="ssh-exec">ssh-exec</option>
       <option value="scoped-git">scoped-git</option>
       <option value="claude-code">claude-code</option>
-      <option value="echo">echo</option>
     </select><input id="a-root" placeholder="base directory (fs/claude)"><button id="btn-offer">Offer</button></div>
     <div class="hint">Offering exposes nothing by itself — a party still needs a grant to invoke it.</div>
   </section>
@@ -259,7 +258,7 @@ export const CONSOLE_HTML = `<!doctype html>
     });
 
     var peerNames = s.peers.map(function (p) { return p.peer; });
-    var agentIds = (s.agents || []).map(function (a) { return typeof a === "string" ? a : a.id; });
+    var agentIds = (s.agents || []).map(function (a) { return typeof a === "string" ? a : a.id; }).filter(function (id) { return id !== "echo"; });
     ["g-peer", "t-peer", "s-peer"].forEach(function (id) {
       fillSelect($(id), peerNames.length ? peerNames : ["— pair first —"], $(id).value);
     });
@@ -269,7 +268,7 @@ export const CONSOLE_HTML = `<!doctype html>
 
     var agentsEl = $("agents");
     agentsEl.innerHTML = "";
-    (s.agents || []).forEach(function (a) {
+    (s.agents || []).filter(function (a) { return (typeof a === "string" ? a : a.id) !== "echo"; }).forEach(function (a) {
       var id = typeof a === "string" ? a : a.id;
       var kind = typeof a === "string" ? "echo" : a.adapter;
       var sess = typeof a === "string" ? null : a.session;
@@ -348,7 +347,7 @@ export const CONSOLE_HTML = `<!doctype html>
     entries.forEach(function (e) {
       var line = document.createElement("div");
       line.className = e.decision;
-      var what = e.kind + (e.agentId ? " · " + e.agentId : "") + (e.partyId ? " · " + e.partyId : "") +
+      var what = (e.kind === "task" ? "ask" : e.kind) + (e.agentId ? " · " + e.agentId : "") + (e.partyId ? " · " + e.partyId : "") +
         (e.reason ? " · " + e.reason : "") + (e.detail ? " — " + e.detail : "");
       line.innerHTML = '<span class="ts">' + esc(e.ts.slice(11, 19)) + "</span>" +
         (e.decision === "denied" ? "✗ " : "· ") + esc(what);
@@ -505,7 +504,7 @@ export const CONSOLE_HTML = `<!doctype html>
     var sel = $("t-agent");
     var current = sel.value;
     sel.innerHTML = "";
-    var agents = (info.agents || []).slice().sort(function (a, b) {
+    var agents = (info.agents || []).filter(function (a) { return a.id !== "echo"; }).sort(function (a, b) {
       return (grantedIds[b.id] ? 1 : 0) - (grantedIds[a.id] ? 1 : 0);
     });
     agents.forEach(function (a) {
