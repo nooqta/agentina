@@ -42,7 +42,20 @@ export class ScopedFsAdapter implements AgentAdapter {
       return { content: body.length > 8192 ? body.slice(0, 8192) + "\n… (truncated)" : body }
     }
 
-    throw new Error(`unknown command "${verb}" — this agent understands: list [dir], read <path>`)
+    // A human saying "hello" shouldn't get a CLI error. Answer with
+    // gentle guidance and what's actually here — denials stay errors,
+    // small talk doesn't.
+    const { abs, scope } = this.confine(".", scopes)
+    const entries = readdirSync(abs, { withFileTypes: true })
+      .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+      .sort()
+      .slice(0, 12)
+    return {
+      content:
+        `I'm a file agent — I can "list" folders or "read <file>" within what was shared (${scope.mode === "rw" ? "read & write" : "read-only"}).\n` +
+        `Here's what's available: ${entries.join(", ") || "(empty)"}\n` +
+        `Try: read ${entries.find((e) => !e.endsWith("/")) ?? "<file>"}`,
+    }
   }
 
   private effectiveScopes(task: AdapterTask): Array<{ root: string; mode: "ro" | "rw" }> {

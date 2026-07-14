@@ -118,7 +118,7 @@ export class AgentinaNode {
           fromPartyId: "local", // the owner connected this channel
           context,
         })
-        this.audit.append({ kind: "task", decision: "allowed", partyId: "local", agentId, detail: `channel:${String(context.channel)}` })
+        this.audit.append({ kind: "task", decision: "allowed", partyId: "local", agentId, detail: `channel:${String(context.channel)} — ${message.slice(0, 60)}` })
         return result.content
       },
       peers: () =>
@@ -459,6 +459,8 @@ export class AgentinaNode {
     for (const s of this.state.data.sessions) for (const g of s.grants) sessionByGrant.set(g, s)
     return this.grants.list()
       .filter((g) => g.toParty === partyId)
+      // Legacy echo grants from pre-M4 states are machinery, not shares.
+      .filter((g) => !g.agentIds.includes("echo"))
       .map((g) => {
         const sc = g.scopes[0]
         const session = sessionByGrant.get(g.id)
@@ -643,7 +645,13 @@ export class AgentinaNode {
             senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
             context: (body.context as Record<string, unknown>) ?? undefined,
           })
-          this.audit.append({ kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id, grantId: policy?.grantId, scopes: policy?.scopes })
+          this.audit.append({
+            kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id,
+            grantId: policy?.grantId, scopes: policy?.scopes,
+            // A short preview turns the activity feed into a usable record
+            // ("ask · files — read brief.txt") instead of bare event names.
+            detail: String(body.message ?? "").slice(0, 80),
+          })
           return this.json(res, 200, { content: result.content })
         } catch (e: any) {
           // Scope denials from the adapter are policy decisions, not crashes —

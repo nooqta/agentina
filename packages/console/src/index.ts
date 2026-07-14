@@ -524,15 +524,28 @@ export const CONSOLE_HTML = `<!doctype html>
     var name = state.selected;
     var listEl = $("share-list");
     var shares = (state.shares[name] || []).filter(function (x) { return x.status === "active"; });
-    listEl.innerHTML = shares.length ? "" :
-      '<div class="hint" style="margin-bottom:6px">You share nothing with ' + esc(name) + " yet. Connecting shares nothing by itself — that's the point.</div>";
+    listEl.innerHTML = "";
+    if (!shares.length) {
+      var hint = document.createElement("div");
+      hint.className = "hint";
+      hint.style.marginBottom = "6px";
+      hint.textContent = "You share nothing with " + name + " yet — connecting shares nothing by itself. Not sure what makes sense to share? ";
+      var lnk = document.createElement("button");
+      lnk.className = "link";
+      lnk.textContent = "Pick what you're doing together →";
+      lnk.onclick = function () { openWizard(); };
+      hint.appendChild(lnk);
+      listEl.appendChild(hint);
+    }
     shares.forEach(function (x) {
       var div = document.createElement("div");
       div.className = "share-item";
+      var pretty = x.kind === "folder" ? (x.value.split("/").filter(Boolean).pop() || x.value) : x.value;
       div.innerHTML =
         "<span>" + (KIND_ICON[x.kind] || "•") + "</span>" +
-        '<span class="what"><b>' + esc(x.value) + "</b> " +
+        '<span class="what"><b>' + esc(pretty) + "</b> " +
         '<span class="meta">' + (x.mode === "rw" ? "read & write" : "read-only") +
+        (x.kind === "folder" ? " · " + esc(x.value) : "") +
         (x.expiresAt ? " · " : "") + "</span>" +
         (x.expiresAt ? '<span class="ttl">' + countdown(x.expiresAt) + "</span>" : "") + "</span>";
       var btn = document.createElement("button");

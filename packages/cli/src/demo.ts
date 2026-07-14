@@ -43,6 +43,17 @@ export async function runDemo(opts: { basePort?: number; print?: (line: string) 
   const badis = new AgentinaNode({ stateDir: dirB, port: basePort + 1, partyName: "Badis (client)", trustLoopback: false, log: silent })
   badis.addAgent(
     {
+      id: "private-notes",
+      partyId: badis.party.id,
+      name: "Private notes",
+      description: "Badis's own notes — never shared.",
+      skills: [{ id: "private-notes", name: "Private notes", description: "private", tags: ["fs"] }],
+      lifecycle: "persistent",
+    },
+    new ScopedFsAdapter(projectDir),
+  )
+  badis.addAgent(
+    {
       id: "files",
       partyId: badis.party.id,
       name: "Files",
@@ -108,14 +119,14 @@ export async function runDemo(opts: { basePort?: number; print?: (line: string) 
     }
     step("path escape denied", escapeDenied.includes("denied") || escapeDenied.includes("403"), `read ../secret.txt → ${escapeDenied.slice(0, 70)}`)
 
-    // 8. The grant covers "files" only — the echo agent stays forbidden.
+    // 8. The grant covers "files" only — other agents stay forbidden.
     let otherAgentDenied = ""
     try {
-      await amal.sendTask(badis.party.name, "hello", "echo")
+      await amal.sendTask(badis.party.name, "hello", "private-notes")
     } catch (e: any) {
       otherAgentDenied = String(e.message)
     }
-    step("ungranted agent denied", otherAgentDenied.includes("403"), `task to "echo" → agent-not-granted`)
+    step("ungranted agent denied", otherAgentDenied.includes("403"), `ask to "private-notes" → agent-not-granted`)
 
     // 9. Forged token → real HTTP 401.
     const forged = await fetch(`http://127.0.0.1:${badis.port}/agentina/v1/ping`, {

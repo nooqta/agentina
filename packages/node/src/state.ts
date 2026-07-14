@@ -60,19 +60,13 @@ export class NodeState {
       this.data.sessions ??= [] // pre-M3 state files
     } else {
       const party: Party = { id: newId("pt"), name: init.partyName, kind: init.partyKind ?? "person" }
+      // No default agents: connectivity is proven by /ping, and a stub
+      // that answers "echo: …" reads as broken to real users. Agents
+      // appear when the owner creates or shares something.
       this.data = {
         party,
         url: init.url,
-        agents: [
-          {
-            id: "echo",
-            partyId: party.id,
-            name: "Echo",
-            description: "Built-in connectivity agent — replies with what it was sent.",
-            skills: [{ id: "echo", name: "Echo", description: "Echoes the task message back.", tags: ["builtin"] }],
-            lifecycle: "persistent",
-          },
-        ],
+        agents: [],
         peers: [],
         credentials: [],
         grants: [],
