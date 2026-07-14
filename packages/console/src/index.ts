@@ -451,7 +451,12 @@ export const CONSOLE_HTML = `<!doctype html>
     var bar = $("askbar");
     if (!agents.length) {
       emptyEl.style.display = "block";
-      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side. Want a guided start for both of you? <button class='link' onclick='document.getElementById(\"c-wizard\").click()'>Pick what you're doing together</button>";
+      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side. Want a guided start for both of you?<br><br>";
+      var wizBtn = document.createElement("button");
+      wizBtn.className = "link";
+      wizBtn.textContent = "Pick what you're doing together →";
+      wizBtn.onclick = function () { openWizard(); };
+      emptyEl.appendChild(wizBtn);
       bar.style.display = "none";
       $("thread").style.display = "none";
       return;
