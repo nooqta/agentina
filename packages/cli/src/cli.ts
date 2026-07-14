@@ -95,6 +95,9 @@ Usage:
   agentina join <link> [--port <n>]       redeem a pairing link from another party
   agentina test <peer> [--port <n>]       authenticated connection test
   agentina ask <peer> <message…> [--agent <id>] [--port <n>]   ask another party's agent (within what they granted you)
+  agentina share --to <peer> --folder <dir>|--server <user@host>|--repo <url> [--rw] [--for 2h|7d]
+  agentina shares <peer>                  list what you share with them
+  agentina unshare <share-id>             stop a share instantly
   agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
   agentina channel telegram --token-env <VAR> [--chats <id,id…>]
   agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
@@ -211,6 +214,35 @@ async function main(): Promise<void> {
         adapter: { kind, ...(typeof flags.root === "string" ? { baseRoot: flags.root } : {}) },
       })
       console.log(`Offering agent "${offer.id}" (${kind}) — grant a party access to it with: agentina grant --to <peer> --agent ${offer.id}`)
+      return
+    }
+
+    case "share": {
+      const to = typeof flags.to === "string" ? flags.to : ""
+      const kind = typeof flags.folder === "string" ? "folder" : typeof flags.server === "string" ? "server" : typeof flags.repo === "string" ? "repo" : ""
+      const value = (flags.folder ?? flags.server ?? flags.repo) as string
+      if (!to || !kind) throw new Error("Usage: agentina share --to <peer> --folder <dir>|--server user@host|--repo <url> [--rw] [--for 2h|7d]")
+      const body: Record<string, unknown> = { peer: to, kind, value, mode: flags.rw ? "rw" : "ro" }
+      if (typeof flags.for === "string") body.durationSeconds = parseDuration(flags.for)
+      const share = await control(port, "POST", "/agentina/v1/shares", body)
+      console.log(`✓ Shared ${kind} "${value}" with ${to}${share.expiresAt ? ` — self-destructs ${share.expiresAt}` : ""} (stop: agentina unshare ${share.id})`)
+      return
+    }
+
+    case "shares": {
+      if (!positional[0]) throw new Error("Usage: agentina shares <peer>")
+      const { shares } = await control(port, "GET", `/agentina/v1/shares?peer=${encodeURIComponent(positional[0])}`)
+      if (!shares.length) return console.log("Nothing shared.")
+      for (const x of shares) {
+        console.log(`${x.id} [${x.status}] ${x.kind}: ${x.value}${x.mode ? ` (${x.mode})` : ""}${x.expiresAt ? ` expires ${x.expiresAt}` : ""}`)
+      }
+      return
+    }
+
+    case "unshare": {
+      if (!positional[0]) throw new Error("Usage: agentina unshare <share-id>")
+      await control(port, "POST", "/agentina/v1/shares/stop", { id: positional[0] })
+      console.log(`Stopped — their next use is denied`)
       return
     }
 

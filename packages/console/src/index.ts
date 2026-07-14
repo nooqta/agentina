@@ -1,27 +1,29 @@
 // --- The agentina console ---
 //
-// One self-contained page, served by the node at GET / (loopback-only,
-// like the rest of the control surface). Vanilla JS polling the local
-// control API — no build step, no CDN, works on an air-gapped mesh.
+// Design principles (after the "overcomplicated" feedback — this is how
+// a Google/Anthropic product team would shape it):
+//   1. CONTACTS, NOT CONCEPTS — the home surface is the people you
+//      collaborate with, like a chat app. Grants/sessions/adapters are
+//      machinery; users see "shares" and "asking".
+//   2. PROGRESSIVE DISCLOSURE — each state shows exactly one next step.
+//      No peers → a single onboarding card. A contact with nothing
+//      shared → an empty state that says what to do. Advanced things
+//      (channels, manual agents, raw feed) live behind "Advanced".
+//   3. ONE VERB: SHARE — "share this folder, read-only, for a week"
+//      creates the agent + grant (+ self-destructing session) under the
+//      hood via the node's /shares API.
 //
-// PARITY RULE: every action a user can take via the CLI must exist
-// here — pairing, testing, grants (all scope kinds + expiry), tasks,
-// agent offers, sessions, channel config. The console is the product
-// for non-technical parties; the CLI is the shortcut for the rest.
-//
-// NOTE for maintainers: the page lives inside a TS template literal, so
-// the inline <script> deliberately avoids backticks and ${…} — string
-// concatenation only.
+// Served at GET / (loopback-only). Vanilla JS, no CDN, air-gap safe.
+// NOTE: the page lives in a TS template literal — the inline <script>
+// avoids backticks and dollar-brace on purpose; concatenation only.
 
 export const CONSOLE_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agentina console</title>
+<title>agentina</title>
 <style>
-  /* agentx design language: oklch dark surfaces, mint accent, IBM Plex,
-     13px density. Tokens mirror agentx src/daemon/ui/tokens.ts. */
   :root {
     --ax-bg: oklch(0.16 0.010 265);
     --ax-bg-elev: oklch(0.19 0.012 265);
@@ -39,157 +41,239 @@ export const CONSOLE_HTML = `<!doctype html>
     --ax-err: oklch(0.68 0.19 25);
     --ax-info: oklch(0.78 0.10 220);
     --ax-radius: 6px;
-    --ax-radius-lg: 8px;
+    --ax-radius-lg: 10px;
     --ax-font: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
     --ax-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
     color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--ax-bg); color: var(--ax-text); font: 13px/1.6 var(--ax-font); padding-bottom: 60px; }
-  a { color: var(--ax-info); }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--ax-border); background: var(--ax-bg-elev); flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
-  header h1 { font-size: 14px; font-weight: 600; letter-spacing: .2px; margin-right: 4px; }
-  header h1 span { color: var(--ax-accent); }
-  #party-name { font-weight: 600; color: var(--ax-text-2); }
-  .chip { font: 10.5px var(--ax-mono); color: var(--ax-muted); background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: 999px; padding: 1px 9px; }
-  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; padding: 16px 18px; max-width: 1400px; }
-  .card { background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: var(--ax-radius-lg); padding: 14px 16px; }
-  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--ax-muted); margin-bottom: 12px; font-weight: 600; }
-  .card h2 b { color: var(--ax-accent); }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-  input, select { background: var(--ax-bg-elev); color: var(--ax-text); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 6px 9px; font: 12.5px var(--ax-font); flex: 1; min-width: 0; }
-  input:focus, select:focus { outline: none; border-color: var(--ax-accent-2); }
-  button { background: var(--ax-accent); color: oklch(0.16 0.02 165); border: 0; border-radius: var(--ax-radius); padding: 6px 12px; font: 600 12px var(--ax-font); cursor: pointer; white-space: nowrap; }
+  html, body { height: 100%; }
+  body { background: var(--ax-bg); color: var(--ax-text); font: 13.5px/1.6 var(--ax-font); display: flex; flex-direction: column; }
+  button { background: var(--ax-accent); color: oklch(0.16 0.02 165); border: 0; border-radius: var(--ax-radius); padding: 7px 14px; font: 600 12.5px var(--ax-font); cursor: pointer; white-space: nowrap; }
   button:hover { filter: brightness(1.08); }
   button.ghost { background: var(--ax-surface-2); color: var(--ax-text-2); border: 1px solid var(--ax-border-2); }
   button.danger { background: transparent; color: var(--ax-err); border: 1px solid var(--ax-err); }
+  button.link { background: none; border: none; color: var(--ax-info); padding: 0; font-weight: 500; }
   button:disabled { opacity: .45; cursor: default; }
-  .list { display: flex; flex-direction: column; gap: 6px; }
-  .item { background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 7px 10px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-  .item .meta { font: 11px var(--ax-mono); color: var(--ax-muted); }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  input, select { background: var(--ax-bg-elev); color: var(--ax-text); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 7px 10px; font: 13px var(--ax-font); min-width: 0; }
+  input:focus, select:focus { outline: none; border-color: var(--ax-accent-2); }
+  .hint { font-size: 12px; color: var(--ax-muted); }
+  .mono { font-family: var(--ax-mono); }
+  .ttl { font: 10.5px var(--ax-mono); color: var(--ax-warn); }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--ax-border); background: var(--ax-bg-elev); }
+  header h1 { font-size: 14px; font-weight: 600; }
+  header h1 span { color: var(--ax-accent); }
+  #me { color: var(--ax-text-2); font-weight: 600; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ax-surface-3); border: 1px solid var(--ax-accent-2); border-radius: var(--ax-radius-lg); padding: 9px 16px; font-size: 12.5px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 50; max-width: 80vw; }
+  #toast.show { opacity: 1; }
+
+  /* onboarding (no peers yet) */
+  #onboarding { flex: 1; display: none; align-items: center; justify-content: center; padding: 24px; }
+  #onboarding .panel { max-width: 480px; width: 100%; background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: 14px; padding: 32px; text-align: center; }
+  #onboarding h2 { font-size: 18px; margin-bottom: 6px; }
+  #onboarding p { color: var(--ax-muted); margin-bottom: 22px; }
+  #onboarding .or { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--ax-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  #onboarding .or::before, #onboarding .or::after { content: ""; flex: 1; height: 1px; background: var(--ax-border); }
+  #ob-invite-out { display: none; margin-top: 14px; font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px dashed var(--ax-accent-2); border-radius: var(--ax-radius); padding: 10px; word-break: break-all; text-align: left; }
+  #ob-wait { display: none; margin-top: 10px; color: var(--ax-accent); font-size: 12.5px; }
+
+  /* main app (has peers) */
+  #app { flex: 1; display: none; min-height: 0; }
+  #sidebar { width: 240px; border-right: 1px solid var(--ax-border); background: var(--ax-bg-elev); display: flex; flex-direction: column; }
+  #contacts { flex: 1; overflow-y: auto; padding: 8px; }
+  .contact { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: var(--ax-radius); cursor: pointer; border: 1px solid transparent; }
+  .contact:hover { background: var(--ax-surface-2); }
+  .contact.sel { background: var(--ax-surface-2); border-color: var(--ax-border-2); }
+  .contact .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .dot.ok { background: var(--ax-accent); box-shadow: 0 0 6px var(--ax-accent-2); }
   .dot.bad { background: var(--ax-err); }
-  .st-active { color: var(--ax-accent); } .st-proposed { color: var(--ax-warn); } .st-revoked, .st-closed { color: var(--ax-muted); }
-  .ttl { font: 10.5px var(--ax-mono); color: var(--ax-warn); }
-  .feed { font: 11.5px var(--ax-mono); display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow-y: auto; }
+  #sidebar .foot { padding: 10px; border-top: 1px solid var(--ax-border); }
+  #btn-add { width: 100%; }
+  #adv-toggle { width: 100%; margin-top: 8px; }
+
+  #mainpane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #contact-head { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--ax-border); }
+  #contact-head h2 { font-size: 15px; }
+  #tabs { display: flex; gap: 2px; padding: 0 20px; border-bottom: 1px solid var(--ax-border); }
+  #tabs button { background: none; border: none; color: var(--ax-muted); padding: 9px 14px; font: 600 12.5px var(--ax-font); border-bottom: 2px solid transparent; border-radius: 0; }
+  #tabs button.sel { color: var(--ax-text); border-bottom-color: var(--ax-accent); }
+  .tabpane { flex: 1; overflow-y: auto; padding: 18px 20px; display: none; }
+  .tabpane.sel { display: flex; flex-direction: column; }
+
+  /* Ask tab: a conversation */
+  #chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip-share { font: 11.5px var(--ax-mono); border: 1px solid var(--ax-border-2); background: var(--ax-surface-2); color: var(--ax-text-2); border-radius: 999px; padding: 3px 11px; cursor: pointer; }
+  .chip-share.sel { border-color: var(--ax-accent); color: var(--ax-accent); }
+  #thread { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+  .bubble { max-width: 82%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; font-size: 13px; }
+  .bubble.me { align-self: flex-end; background: var(--ax-accent-2); color: var(--ax-text); border-bottom-right-radius: 3px; }
+  .bubble.them { align-self: flex-start; background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-bottom-left-radius: 3px; font-family: var(--ax-mono); font-size: 12px; }
+  .bubble.err { align-self: flex-start; background: none; border: 1px solid var(--ax-err); color: var(--ax-err); }
+  #askbar { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--ax-border); }
+  #askbar input { flex: 1; }
+  .empty { color: var(--ax-muted); text-align: center; margin: auto; max-width: 380px; }
+  .empty b { color: var(--ax-text-2); }
+
+  /* Sharing tab */
+  .share-item { display: flex; align-items: center; gap: 10px; background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 9px 12px; margin-bottom: 6px; }
+  .share-item .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .share-item .meta { font: 11px var(--ax-mono); color: var(--ax-muted); }
+  #share-form { background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: var(--ax-radius-lg); padding: 14px; margin-top: 14px; }
+  #share-form .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  #share-form input { flex: 1; }
+
+  /* Activity + advanced */
+  .feed { font: 11.5px var(--ax-mono); display: flex; flex-direction: column; gap: 4px; }
   .feed .denied { color: var(--ax-err); }
   .feed .allowed { color: var(--ax-muted); }
   .feed .ts { opacity: .55; margin-right: 6px; }
-  .invite-out { font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px dashed var(--ax-accent-2); border-radius: var(--ax-radius); padding: 9px; word-break: break-all; margin-top: 8px; display: none; }
-  .hint { font-size: 11.5px; color: var(--ax-muted); margin-top: 4px; }
-  .reply { font: 12px var(--ax-mono); background: var(--ax-bg-elev); border-left: 3px solid var(--ax-info); border-radius: var(--ax-radius); padding: 9px; margin-top: 8px; white-space: pre-wrap; display: none; }
-  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ax-surface-3); border: 1px solid var(--ax-accent-2); color: var(--ax-text); border-radius: var(--ax-radius-lg); padding: 8px 16px; font-size: 12.5px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 80vw; }
-  #toast.show { opacity: 1; }
-  label.mode { display: flex; gap: 4px; align-items: center; font-size: 12px; color: var(--ax-muted); }
+  #advanced { display: none; position: fixed; inset: 0; background: oklch(0.10 0.01 265 / 0.7); z-index: 40; align-items: center; justify-content: center; }
+  #advanced .panel { background: var(--ax-surface); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 22px; width: min(560px, 92vw); max-height: 86vh; overflow-y: auto; }
+  #advanced h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--ax-muted); margin: 16px 0 8px; }
+  #advanced h3:first-child { margin-top: 0; }
+  #advanced .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  #advanced input { flex: 1; }
+  dialog#dlg-invite { background: var(--ax-surface); color: var(--ax-text); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 22px; width: min(480px, 92vw); }
+  dialog::backdrop { background: oklch(0.10 0.01 265 / 0.7); }
 </style>
 </head>
 <body>
 <header>
-  <h1><span>agentina</span> console</h1>
-  <span style="color:var(--ax-muted)">You are</span>
-  <span id="party-name">…</span>
-  <span class="chip" id="party-id"></span>
-  <span class="chip" id="proto"></span>
-  <span class="chip" id="node-url"></span>
-  <span class="chip" id="channels-chip"></span>
+  <h1><span>agentina</span></h1>
+  <span class="hint">You are</span><span id="me">…</span>
+  <span style="flex:1"></span>
+  <span class="hint mono" id="me-id"></span>
 </header>
-<main>
-  <section class="card">
-    <h2><b>1</b> · Pair with another party</h2>
-    <div class="row"><button id="btn-invite">Create invite link</button><span class="hint">one-time · expires in 15 min</span></div>
-    <div class="invite-out" id="invite-out"></div>
-    <div class="row" style="margin-top:14px">
-      <input id="join-link" placeholder="agentina://join/… (paste a link you received)">
-      <button class="ghost" id="btn-join">Join</button>
-    </div>
-    <h2 style="margin-top:18px">Peers</h2>
-    <div class="list" id="peers"></div>
-  </section>
 
-  <section class="card">
-    <h2><b>2</b> · Grant access <span style="text-transform:none">(what may THEY touch?)</span></h2>
-    <div class="row"><select id="g-peer"></select><select id="g-agent"></select></div>
+<div id="onboarding">
+  <div class="panel">
+    <h2>Collaborate with someone</h2>
+    <p>Connect this machine with another person's — your agents will work together under rules you each control.</p>
+    <button id="ob-invite" style="width:100%">Create an invite link</button>
+    <div id="ob-invite-out"></div>
+    <div id="ob-wait">Waiting for them to join…</div>
+    <div class="or">or</div>
+    <div style="display:flex;gap:8px">
+      <input id="ob-join" placeholder="Paste an invite you received (agentina://join/…)">
+      <button class="ghost" id="ob-join-btn">Join</button>
+    </div>
+    <p class="hint" style="margin-top:18px;margin-bottom:0">Invites are one-time links, safe to send over any chat. Connecting shares nothing by itself.</p>
+  </div>
+</div>
+
+<div id="app">
+  <div id="sidebar">
+    <div id="contacts"></div>
+    <div class="foot">
+      <button id="btn-add" class="ghost">+ Invite someone</button>
+      <button id="adv-toggle" class="ghost">Advanced</button>
+    </div>
+  </div>
+  <div id="mainpane">
+    <div id="contact-head">
+      <span class="dot ok" id="c-dot"></span>
+      <h2 id="c-name">…</h2>
+      <button class="link" id="c-test">test connection</button>
+      <span style="flex:1"></span>
+      <span class="hint mono" id="c-id"></span>
+    </div>
+    <div id="tabs">
+      <button data-tab="ask" class="sel">Ask them</button>
+      <button data-tab="share">What I share</button>
+      <button data-tab="activity">Activity</button>
+    </div>
+    <div class="tabpane sel" id="pane-ask">
+      <div id="chips"></div>
+      <div id="thread"></div>
+      <div id="ask-empty" class="empty" style="display:none"></div>
+      <div id="askbar">
+        <input id="ask-input" placeholder="…">
+        <button id="ask-send">Ask</button>
+      </div>
+    </div>
+    <div class="tabpane" id="pane-share">
+      <div id="share-list"></div>
+      <div id="share-form">
+        <div class="hint" style="margin-bottom:10px"><b style="color:var(--ax-text-2)">Share something new.</b> Their agents can then use it — exactly this, nothing else, and you can stop it anytime.</div>
+        <div class="row">
+          <select id="sh-kind" style="max-width:130px">
+            <option value="folder">a folder</option>
+            <option value="server">a server</option>
+            <option value="repo">a repository</option>
+          </select>
+          <input id="sh-value" placeholder="/path/to/folder">
+        </div>
+        <div class="row">
+          <select id="sh-mode" style="max-width:130px">
+            <option value="ro">read-only</option>
+            <option value="rw">read &amp; write</option>
+          </select>
+          <select id="sh-for" style="max-width:150px">
+            <option value="">until I stop it</option>
+            <option value="3600">for 1 hour</option>
+            <option value="86400">for 1 day</option>
+            <option value="604800">for 1 week</option>
+          </select>
+          <button id="sh-go">Share</button>
+        </div>
+      </div>
+    </div>
+    <div class="tabpane" id="pane-activity">
+      <div class="feed" id="feed"></div>
+    </div>
+  </div>
+</div>
+
+<div id="advanced">
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <b>Advanced</b>
+      <button class="ghost" id="adv-close">Close</button>
+    </div>
+    <h3>Node</h3>
+    <div class="hint mono" id="adv-node"></div>
+    <h3>Channels — talk to agents from Telegram / GitLab</h3>
+    <div class="hint" id="adv-ch-active" style="margin-bottom:8px"></div>
+    <div class="row"><input id="ch-tg-env" placeholder="Telegram token env var (e.g. TG_BOT_TOKEN)"><button class="ghost" id="btn-ch-tg">Save</button></div>
+    <div class="row"><input id="ch-gl-host" placeholder="GitLab host url"><input id="ch-gl-env" placeholder="token env var" style="max-width:130px"><button class="ghost" id="btn-ch-gl">Save</button></div>
+    <div class="hint">Secrets are read from environment variables, never stored in files. Restart the node after saving.</div>
+    <h3>Offer a custom agent</h3>
     <div class="row">
-      <input id="g-fs" placeholder="directory to share (fs scope)">
-      <label class="mode"><input type="radio" name="g-mode" value="ro" checked> read-only</label>
-      <label class="mode"><input type="radio" name="g-mode" value="rw"> read-write</label>
+      <input id="a-id" placeholder="agent id" style="max-width:120px">
+      <select id="a-adapter" style="max-width:130px">
+        <option value="claude-code">claude-code</option>
+        <option value="scoped-fs">scoped-fs</option>
+        <option value="ssh-exec">ssh-exec</option>
+        <option value="scoped-git">scoped-git</option>
+      </select>
+      <input id="a-root" placeholder="base directory">
+      <button class="ghost" id="btn-offer">Offer</button>
     </div>
-    <div class="row">
-      <input id="g-ssh" placeholder="ssh scope: user@host (optional)">
-      <input id="g-repo" placeholder="repo scope: git url (optional)">
-    </div>
-    <div class="row">
-      <input id="g-expires" placeholder="expires: 2h, 7d… (optional)" style="max-width:160px">
-      <button id="btn-grant">Grant</button>
-      <span class="hint">enforced on YOUR node — revoke any time</span>
-    </div>
-    <h2 style="margin-top:18px">Grants you authored</h2>
-    <div class="list" id="grants"></div>
-  </section>
+    <div class="hint">Shares create agents automatically — this is for custom ones (e.g. an AI worker).</div>
+  </div>
+</div>
 
-  <section class="card">
-    <h2><b>3</b> · Sessions <span style="text-transform:none">(temporary agents that self-destruct)</span></h2>
-    <div class="row"><select id="s-peer"></select><input id="s-ttl" placeholder="ttl: 45m, 2h" style="max-width:110px"><select id="s-adapter">
-      <option value="scoped-fs">scoped-fs (share files)</option>
-      <option value="ssh-exec">ssh-exec (run on a server)</option>
-      <option value="scoped-git">scoped-git (read a repo)</option>
-      <option value="claude-code">claude-code (AI worker)</option>
-    </select></div>
-    <div class="row">
-      <input id="s-scope" placeholder="directory to share">
-      <label class="mode"><input type="radio" name="s-mode" value="ro" checked> ro</label>
-      <label class="mode"><input type="radio" name="s-mode" value="rw"> rw</label>
-      <button id="btn-session">Open session</button>
-    </div>
-    <div class="list" id="sessions"></div>
-  </section>
+<dialog id="dlg-invite">
+  <h2 style="font-size:16px;margin-bottom:6px">Invite someone</h2>
+  <p class="hint" style="margin-bottom:14px">Send them this one-time link over any chat. It expires in 15 minutes and is worthless after they join.</p>
+  <div id="dlg-invite-link" style="font:11px var(--ax-mono);background:var(--ax-bg-elev);border:1px dashed var(--ax-accent-2);border-radius:6px;padding:10px;word-break:break-all;margin-bottom:14px"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="ghost" onclick="this.closest('dialog').close()">Done</button>
+  </div>
+</dialog>
 
-  <section class="card">
-    <h2><b>4</b> · Ask a peer's agents <span style="text-transform:none">(their machine, their rules)</span></h2>
-    <div class="hint" style="margin-bottom:8px">A task is a message to ONE agent on the other party's machine. What it may touch is whatever THEY granted you — nothing else. Their agents guard their resources; yours guard yours.</div>
-    <div class="row"><select id="t-peer"></select><select id="t-agent"></select></div>
-    <div class="list" id="t-granted" style="margin-bottom:8px"></div>
-    <div class="row"><input id="t-msg" placeholder="pick an agent first"><button id="btn-task">Ask</button></div>
-    <div class="reply" id="t-reply"></div>
-  </section>
-
-  <section class="card">
-    <h2>Your agents <span style="text-transform:none">(what YOU offer)</span></h2>
-    <div class="list" id="agents" style="margin-bottom:10px"></div>
-    <div class="row"><input id="a-id" placeholder="agent id (e.g. files)" style="max-width:140px"><select id="a-adapter">
-      <option value="scoped-fs">scoped-fs</option>
-      <option value="ssh-exec">ssh-exec</option>
-      <option value="scoped-git">scoped-git</option>
-      <option value="claude-code">claude-code</option>
-    </select><input id="a-root" placeholder="base directory (fs/claude)"><button id="btn-offer">Offer</button></div>
-    <div class="hint">Offering exposes nothing by itself — a party still needs a grant to invoke it.</div>
-  </section>
-
-  <section class="card">
-    <h2>Channels <span style="text-transform:none">(Telegram · GitLab)</span></h2>
-    <div class="row"><span class="hint" id="ch-active">…</span></div>
-    <div class="row"><input id="ch-tg-env" placeholder="Telegram: token env var (e.g. TG_BOT_TOKEN)"><input id="ch-tg-chats" placeholder="allowed chat ids, comma (optional)" style="max-width:190px"><button class="ghost" id="btn-ch-tg">Save</button></div>
-    <div class="row"><input id="ch-gl-host" placeholder="GitLab host url"><input id="ch-gl-env" placeholder="token env var" style="max-width:140px"><input id="ch-gl-secret" placeholder="webhook secret env (opt)" style="max-width:170px"><button class="ghost" id="btn-ch-gl">Save</button></div>
-    <div class="hint">Tokens live in environment variables — never in files. Restart the node after saving. GitLab webhook: &lt;node-url&gt;/channels/gitlab/webhook (note events).</div>
-  </section>
-
-  <section class="card">
-    <h2>Activity <span style="text-transform:none">(every decision, including denials)</span></h2>
-    <div class="feed" id="feed"></div>
-  </section>
-</main>
 <div id="toast"></div>
 <script>
 (function () {
   "use strict";
   var API = "/agentina/v1";
+  var state = { status: null, selected: null, peerInfo: {}, shares: {}, threads: {}, chip: {} };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; }
-  function toast(msg, ms) {
+  function toast(msg) {
     var t = $("toast"); t.textContent = msg; t.classList.add("show");
-    setTimeout(function () { t.classList.remove("show"); }, ms || 2600);
+    setTimeout(function () { t.classList.remove("show"); }, 2800);
   }
   function api(method, path, body) {
     return fetch(API + path, {
@@ -203,13 +287,6 @@ export const CONSOLE_HTML = `<!doctype html>
       });
     });
   }
-  // "45m" | "2h" | "7d" | "3600" -> seconds
-  function parseDuration(v) {
-    var m = /^(\\d+)\\s*([smhd]?)$/.exec(v.trim());
-    if (!m) throw new Error('Cannot parse "' + v + '" — use 45m, 2h, 7d');
-    var mult = { "": 1, s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
-    return Number(m[1]) * mult;
-  }
   function countdown(iso) {
     var left = Math.round((Date.parse(iso) - Date.now()) / 1000);
     if (left <= 0) return "expiring…";
@@ -218,136 +295,224 @@ export const CONSOLE_HTML = `<!doctype html>
     if (left < 129600) return Math.round(left / 3600) + "h left";
     return Math.round(left / 86400) + "d left";
   }
-  function fillSelect(sel, values, current) {
-    sel.innerHTML = "";
-    values.forEach(function (v) {
-      var o = document.createElement("option");
-      o.value = v; o.textContent = v;
-      if (v === current) o.selected = true;
-      sel.appendChild(o);
+  var USAGE = {
+    "scoped-fs": 'Try "list", or "read brief.txt"',
+    "scoped-git": 'Try "branches", or "log 10"',
+    "ssh-exec": "Type a command to run on their server",
+    "claude-code": "Describe what you need, in plain language",
+  };
+
+  // ---------- top-level render ----------
+  function render(s) {
+    state.status = s;
+    $("me").textContent = s.party.name;
+    $("me-id").textContent = s.party.id;
+    var peers = s.peers || [];
+    $("onboarding").style.display = peers.length ? "none" : "flex";
+    $("app").style.display = peers.length ? "flex" : "none";
+    if (!peers.length) return;
+    if (!state.selected || !peers.some(function (p) { return p.peer === state.selected; })) {
+      state.selected = peers[0].peer;
+      loadPeer(state.selected);
+    }
+    renderContacts(peers);
+    renderContactHead(peers);
+    renderAsk();
+    renderShares();
+    renderFeed();
+    $("adv-node").textContent = s.url + " · " + s.protocol + " · agents: " +
+      (s.agents || []).filter(function (a) { return a.id !== "echo"; }).map(function (a) { return a.id; }).join(", ");
+    $("adv-ch-active").textContent = (s.channels && s.channels.length) ? "Active: " + s.channels.join(", ") : "None running.";
+  }
+
+  function renderContacts(peers) {
+    var el = $("contacts");
+    el.innerHTML = "";
+    peers.forEach(function (p) {
+      var div = document.createElement("div");
+      div.className = "contact" + (p.peer === state.selected ? " sel" : "");
+      div.innerHTML = '<span class="dot ' + (p.healthy ? "ok" : "bad") + '"></span><span>' + esc(p.peer) + "</span>";
+      div.onclick = function () {
+        state.selected = p.peer;
+        loadPeer(p.peer);
+        render(state.status);
+      };
+      el.appendChild(div);
     });
   }
-  function mode(name) { return document.querySelector('input[name="' + name + '"]:checked').value; }
 
-  function render(s) {
-    $("party-name").textContent = s.party.name;
-    $("party-id").textContent = s.party.id;
-    $("proto").textContent = s.protocol;
-    $("node-url").textContent = s.url;
-    $("channels-chip").textContent = (s.channels && s.channels.length) ? "channels: " + s.channels.join(", ") : "no channels";
-    $("ch-active").textContent = (s.channels && s.channels.length) ? "Active: " + s.channels.join(", ") : "No channels running. Configure below, set the env var, restart the node.";
+  function renderContactHead(peers) {
+    var p = peers.find(function (x) { return x.peer === state.selected; });
+    if (!p) return;
+    $("c-name").textContent = p.peer;
+    $("c-dot").className = "dot " + (p.healthy ? "ok" : "bad");
+    var info = state.peerInfo[p.peer];
+    $("c-id").textContent = info && info.grantedToMe && info.grantedToMe.length ? "" : "";
+  }
 
-    var peersEl = $("peers");
-    peersEl.innerHTML = s.peers.length ? "" : '<div class="hint">No peers yet — create an invite and send the link, or paste one you received.</div>';
-    s.peers.forEach(function (p) {
+  // ---------- per-peer data ----------
+  function loadPeer(name) {
+    api("GET", "/peer-grants?peer=" + encodeURIComponent(name)).then(function (info) {
+      state.peerInfo[name] = info;
+      if (state.selected === name) { renderAsk(); }
+    }).catch(function () { /* offline */ });
+    api("GET", "/shares?peer=" + encodeURIComponent(name)).then(function (r) {
+      state.shares[name] = r.shares || [];
+      if (state.selected === name) { renderShares(); }
+    }).catch(function () { /* */ });
+  }
+
+  // ---------- Ask tab: a conversation with their agents ----------
+  function grantedAgents(name) {
+    var info = state.peerInfo[name];
+    if (!info) return [];
+    var granted = {};
+    (info.grantedToMe || []).forEach(function (g) {
+      (g.agentIds || []).forEach(function (id) { granted[id] = g; });
+    });
+    return (info.agents || []).filter(function (a) { return granted[a.id] && a.id !== "echo"; })
+      .map(function (a) { return { id: a.id, tags: a.tags || [], grant: granted[a.id] }; });
+  }
+  function chipLabel(a) {
+    var g = a.grant;
+    var sc = (g.scopes || [])[0];
+    if (sc && sc.kind === "fs") return "📁 " + (sc.root.split("/").pop() || sc.root);
+    if (sc && sc.kind === "ssh") return "🖥 " + sc.host;
+    if (sc && sc.kind === "repo") return "🌿 " + (sc.url.split("/").pop() || sc.url);
+    return "🤖 " + a.id;
+  }
+  function renderAsk() {
+    var name = state.selected;
+    var agents = grantedAgents(name);
+    var chipsEl = $("chips");
+    chipsEl.innerHTML = "";
+    var emptyEl = $("ask-empty");
+    var bar = $("askbar");
+    if (!agents.length) {
+      emptyEl.style.display = "block";
+      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side — ask them to open their console, pick you, and hit <b>Share</b>. The moment they do, it appears here.";
+      bar.style.display = "none";
+      $("thread").style.display = "none";
+      return;
+    }
+    emptyEl.style.display = "none";
+    bar.style.display = "flex";
+    $("thread").style.display = "flex";
+    if (!state.chip[name] || !agents.some(function (a) { return a.id === state.chip[name]; })) {
+      state.chip[name] = agents[0].id;
+    }
+    agents.forEach(function (a) {
+      var c = document.createElement("button");
+      c.className = "chip-share" + (state.chip[name] === a.id ? " sel" : "");
+      c.textContent = chipLabel(a);
+      if (a.grant.expiresAt) c.textContent += " · " + countdown(a.grant.expiresAt);
+      c.onclick = function () { state.chip[name] = a.id; renderAsk(); };
+      chipsEl.appendChild(c);
+    });
+    var chosen = agents.find(function (a) { return a.id === state.chip[name]; });
+    var hint = "";
+    (chosen.tags || []).forEach(function (t) { if (USAGE[t]) hint = USAGE[t]; });
+    $("ask-input").placeholder = hint || "your message";
+    renderThread();
+  }
+  function renderThread() {
+    var el = $("thread");
+    el.innerHTML = "";
+    var msgs = state.threads[state.selected] || [];
+    if (!msgs.length) {
+      el.innerHTML = '<div class="empty" style="margin:auto">This is where replies appear. Pick what to use above, then ask.</div>';
+      return;
+    }
+    msgs.forEach(function (m) {
+      var b = document.createElement("div");
+      b.className = "bubble " + m.who;
+      b.textContent = m.text;
+      el.appendChild(b);
+    });
+    el.scrollTop = el.scrollHeight;
+  }
+  function sendAsk() {
+    var name = state.selected;
+    var text = $("ask-input").value.trim();
+    if (!text) return;
+    var agent = state.chip[name];
+    state.threads[name] = state.threads[name] || [];
+    state.threads[name].push({ who: "me", text: text });
+    $("ask-input").value = "";
+    renderThread();
+    api("POST", "/task", { peer: name, agent: agent, message: text }).then(function (r) {
+      state.threads[name].push({ who: "them", text: r.content });
+      renderThread();
+    }).catch(function (e) {
+      state.threads[name].push({ who: "err", text: "⛔ " + e.message });
+      renderThread();
+      loadPeer(name); // a denial usually means grants changed
+    });
+  }
+  $("ask-send").onclick = sendAsk;
+  $("ask-input").addEventListener("keydown", function (e) { if (e.key === "Enter") sendAsk(); });
+
+  // ---------- Sharing tab ----------
+  var KIND_ICON = { folder: "📁", server: "🖥", repo: "🌿", agent: "🤖" };
+  function renderShares() {
+    var name = state.selected;
+    var listEl = $("share-list");
+    var shares = (state.shares[name] || []).filter(function (x) { return x.status === "active"; });
+    listEl.innerHTML = shares.length ? "" :
+      '<div class="hint" style="margin-bottom:6px">You share nothing with ' + esc(name) + " yet. Connecting shares nothing by itself — that's the point.</div>";
+    shares.forEach(function (x) {
       var div = document.createElement("div");
-      div.className = "item";
+      div.className = "share-item";
       div.innerHTML =
-        '<span><span class="dot ' + (p.healthy ? "ok" : "bad") + '"></span>' + esc(p.peer) +
-        ' <span class="meta">' + esc(p.peerUrl) + " · " + p.skills.length + " agent(s)</span></span>";
+        "<span>" + (KIND_ICON[x.kind] || "•") + "</span>" +
+        '<span class="what"><b>' + esc(x.value) + "</b> " +
+        '<span class="meta">' + (x.mode === "rw" ? "read & write" : "read-only") +
+        (x.expiresAt ? " · " : "") + "</span>" +
+        (x.expiresAt ? '<span class="ttl">' + countdown(x.expiresAt) + "</span>" : "") + "</span>";
       var btn = document.createElement("button");
-      btn.className = "ghost"; btn.textContent = "Test connection";
+      btn.className = "danger"; btn.textContent = "Stop";
       btn.onclick = function () {
-        btn.disabled = true;
-        api("POST", "/test", { peer: p.peer }).then(function (r) {
-          toast("✓ " + r.party.name + " answered in " + r.latencyMs + "ms");
-        }).catch(function (e) { toast("✗ " + e.message); }).finally(function () { btn.disabled = false; });
+        api("POST", "/shares/stop", { id: x.id }).then(function () {
+          toast("Stopped — their next use is denied");
+          loadPeer(name);
+        }).catch(function (e) { toast("⛔ " + e.message); });
       };
       div.appendChild(btn);
-      peersEl.appendChild(div);
+      listEl.appendChild(div);
     });
+  }
+  $("sh-kind").onchange = function () {
+    var ph = { folder: "/path/to/folder", server: "user@host", repo: "https://… or git@…" };
+    $("sh-value").placeholder = ph[$("sh-kind").value];
+  };
+  $("sh-go").onclick = function () {
+    var value = $("sh-value").value.trim();
+    if (!value) return toast("⛔ what do you want to share?");
+    var body = {
+      peer: state.selected,
+      kind: $("sh-kind").value,
+      value: value,
+      mode: $("sh-mode").value,
+    };
+    var dur = $("sh-for").value;
+    if (dur) body.durationSeconds = Number(dur);
+    api("POST", "/shares", body).then(function () {
+      toast("✓ Shared with " + state.selected + (dur ? " — self-destructs automatically" : ""));
+      $("sh-value").value = "";
+      loadPeer(state.selected);
+    }).catch(function (e) { toast("⛔ " + e.message); });
+  };
 
-    var peerNames = s.peers.map(function (p) { return p.peer; });
-    var agentIds = (s.agents || []).map(function (a) { return typeof a === "string" ? a : a.id; }).filter(function (id) { return id !== "echo"; });
-    ["g-peer", "t-peer", "s-peer"].forEach(function (id) {
-      fillSelect($(id), peerNames.length ? peerNames : ["— pair first —"], $(id).value);
-    });
-    fillSelect($("g-agent"), agentIds, $("g-agent").value);
-    // First paint of the "what can I do at this peer" view.
-    if (peerNames.length && !peerGrantsCache[$("t-peer").value]) loadPeerGrants($("t-peer").value);
-
-    var agentsEl = $("agents");
-    agentsEl.innerHTML = "";
-    (s.agents || []).filter(function (a) { return (typeof a === "string" ? a : a.id) !== "echo"; }).forEach(function (a) {
-      var id = typeof a === "string" ? a : a.id;
-      var kind = typeof a === "string" ? "echo" : a.adapter;
-      var sess = typeof a === "string" ? null : a.session;
-      var div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML = "<span><b>" + esc(id) + '</b> <span class="meta">' + esc(kind) + (sess ? ' · <span class="ttl">session ' + esc(sess) + "</span>" : "") + "</span></span>";
-      agentsEl.appendChild(div);
-    });
-
-    var grantsEl = $("grants");
-    var grants = s.grants || [];
-    grantsEl.innerHTML = grants.length ? "" : '<div class="hint">Nothing granted. Pairing alone grants nothing — that is the point.</div>';
-    grants.forEach(function (g) {
-      var scopeStr = (g.scopes || []).map(function (sc) {
-        if (sc.kind === "fs") return "fs:" + sc.root + " (" + sc.mode + ")";
-        if (sc.kind === "ssh") return "ssh:" + sc.user + "@" + sc.host;
-        if (sc.kind === "repo") return "repo:" + sc.url + " (" + sc.mode + ")";
-        if (sc.kind === "skill") return "skill:" + sc.skillId;
-        return sc.kind;
-      }).join(", ");
-      var div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML =
-        '<span><span class="st-' + g.status + '">●</span> <b>' + esc(g.agentIds.join(", ")) + "</b> → " + esc(g.toParty) +
-        ' <span class="meta">' + esc(scopeStr || "no scopes") + " · " + g.status + "</span>" +
-        (g.expiresAt && g.status === "active" ? ' <span class="ttl">' + countdown(g.expiresAt) + "</span>" : "") + "</span>";
-      var actions = document.createElement("span");
-      if (g.status === "proposed") {
-        var ok = document.createElement("button");
-        ok.textContent = "Approve";
-        ok.onclick = function () {
-          api("POST", "/grants/approve", { id: g.id }).then(function () { toast("Approved " + g.id); refresh(); })
-            .catch(function (e) { toast("✗ " + e.message); });
-        };
-        actions.appendChild(ok);
-        actions.appendChild(document.createTextNode(" "));
-      }
-      if (g.status !== "revoked") {
-        var rv = document.createElement("button");
-        rv.className = "danger"; rv.textContent = "Revoke";
-        rv.onclick = function () {
-          api("POST", "/grants/revoke", { id: g.id }).then(function () { toast("Revoked — their next call is denied"); refresh(); })
-            .catch(function (e) { toast("✗ " + e.message); });
-        };
-        actions.appendChild(rv);
-      }
-      div.appendChild(actions);
-      grantsEl.appendChild(div);
-    });
-
-    var sessEl = $("sessions");
-    var sessions = s.sessions || [];
-    sessEl.innerHTML = sessions.length ? "" : '<div class="hint">No sessions. Open one for a fixed-length engagement — everything it created disappears when it ends.</div>';
-    sessions.slice().reverse().forEach(function (x) {
-      var div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML =
-        '<span><span class="st-' + x.status + '">●</span> <b>' + esc(x.ephemeralAgents.join(", ")) + "</b>" +
-        ' <span class="meta">' + esc(x.id) + " · " + x.status + "</span>" +
-        (x.status === "active" && x.expiresAt ? ' <span class="ttl">' + countdown(x.expiresAt) + "</span>" : "") + "</span>";
-      if (x.status === "active") {
-        var btn = document.createElement("button");
-        btn.className = "danger"; btn.textContent = "Close now";
-        btn.onclick = function () {
-          api("POST", "/sessions/close", { id: x.id }).then(function () { toast("Session closed — agent gone, grant revoked"); refresh(); })
-            .catch(function (e) { toast("✗ " + e.message); });
-        };
-        div.appendChild(btn);
-      }
-      sessEl.appendChild(div);
-    });
-
+  // ---------- Activity tab ----------
+  function renderFeed() {
     var feed = $("feed");
-    var entries = (s.audit || []).slice().reverse();
+    var entries = ((state.status && state.status.audit) || []).slice().reverse();
     feed.innerHTML = entries.length ? "" : '<div class="hint">Nothing yet.</div>';
     entries.forEach(function (e) {
       var line = document.createElement("div");
       line.className = e.decision;
-      var what = (e.kind === "task" ? "ask" : e.kind) + (e.agentId ? " · " + e.agentId : "") + (e.partyId ? " · " + e.partyId : "") +
+      var kind = e.kind === "task" ? "ask" : e.kind;
+      var what = kind + (e.agentId ? " · " + e.agentId : "") + (e.partyId ? " · " + e.partyId : "") +
         (e.reason ? " · " + e.reason : "") + (e.detail ? " — " + e.detail : "");
       line.innerHTML = '<span class="ts">' + esc(e.ts.slice(11, 19)) + "</span>" +
         (e.decision === "denied" ? "✗ " : "· ") + esc(what);
@@ -355,220 +520,86 @@ export const CONSOLE_HTML = `<!doctype html>
     });
   }
 
-  function refresh() {
-    return api("GET", "/status").then(render).catch(function () { /* node restarting */ });
-  }
+  // ---------- tabs ----------
+  Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (b) {
+    b.onclick = function () {
+      Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (x) { x.classList.remove("sel"); });
+      Array.prototype.forEach.call(document.querySelectorAll(".tabpane"), function (x) { x.classList.remove("sel"); });
+      b.classList.add("sel");
+      $("pane-" + b.getAttribute("data-tab")).classList.add("sel");
+    };
+  });
 
-  $("btn-invite").onclick = function () {
+  // ---------- pairing ----------
+  function makeInvite(outEl, waitEl) {
     api("POST", "/invites").then(function (r) {
-      var out = $("invite-out");
-      out.style.display = "block";
-      out.textContent = r.link;
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(r.link).then(function () { toast("Invite copied to clipboard — send it to the other party"); });
-      } else { toast("Invite created — copy it below"); }
-    }).catch(function (e) { toast("✗ " + e.message); });
-  };
-
-  $("btn-join").onclick = function () {
-    var link = $("join-link").value.trim();
-    if (!link) return toast("Paste an agentina://join/… link first");
+      outEl.style.display = "block";
+      outEl.textContent = r.link;
+      if (waitEl) waitEl.style.display = "block";
+      if (navigator.clipboard) navigator.clipboard.writeText(r.link).then(function () { toast("Invite copied — send it to them"); });
+    }).catch(function (e) { toast("⛔ " + e.message); });
+  }
+  $("ob-invite").onclick = function () { makeInvite($("ob-invite-out"), $("ob-wait")); };
+  $("ob-join-btn").onclick = function () {
+    var link = $("ob-join").value.trim();
+    if (!link) return toast("Paste the invite link first");
     api("POST", "/join", { link: link }).then(function (r) {
-      toast('✓ Paired with "' + r.party.name + '"');
-      $("join-link").value = "";
+      toast('✓ Connected with "' + r.party.name + '"');
       refresh();
-    }).catch(function (e) { toast("✗ " + e.message); });
+    }).catch(function (e) { toast("⛔ " + e.message); });
+  };
+  $("btn-add").onclick = function () {
+    $("dlg-invite-link").textContent = "…";
+    $("dlg-invite").showModal();
+    makeInvite($("dlg-invite-link"), null);
+  };
+  $("c-test").onclick = function () {
+    api("POST", "/test", { peer: state.selected }).then(function (r) {
+      toast("✓ " + r.party.name + " answered in " + r.latencyMs + "ms");
+    }).catch(function (e) { toast("⛔ " + e.message); });
   };
 
-  $("btn-grant").onclick = function () {
-    var scopes = [];
-    var m = mode("g-mode");
-    if ($("g-fs").value.trim()) scopes.push({ kind: "fs", root: $("g-fs").value.trim(), mode: m });
-    var sshVal = $("g-ssh").value.trim();
-    if (sshVal) {
-      var parts = sshVal.split("@");
-      if (parts.length !== 2) return toast("✗ ssh scope must be user@host");
-      scopes.push({ kind: "ssh", user: parts[0], host: parts[1] });
-    }
-    if ($("g-repo").value.trim()) scopes.push({ kind: "repo", url: $("g-repo").value.trim(), mode: m });
-    var body = { toParty: $("g-peer").value, agentIds: [$("g-agent").value], scopes: scopes };
-    var exp = $("g-expires").value.trim();
-    try {
-      if (exp) body.expiresAt = new Date(Date.now() + parseDuration(exp) * 1000).toISOString();
-    } catch (e) { return toast("✗ " + e.message); }
-    api("POST", "/grants", body).then(function (g) {
-      toast("✓ Granted " + g.id);
-      $("g-fs").value = ""; $("g-ssh").value = ""; $("g-repo").value = ""; $("g-expires").value = "";
-      refresh();
-    }).catch(function (e) { toast("✗ " + e.message); });
-  };
-
-  $("s-adapter").onchange = function () {
-    var ph = { "scoped-fs": "directory to share", "ssh-exec": "user@host to run on", "scoped-git": "git repository url", "claude-code": "working directory" };
-    $("s-scope").placeholder = ph[$("s-adapter").value] || "scope";
-  };
-
-  $("btn-session").onclick = function () {
-    var kind = $("s-adapter").value;
-    var val = $("s-scope").value.trim();
-    var m = mode("s-mode");
-    var scopes = [];
-    var adapter = { kind: kind };
-    if (kind === "scoped-fs" || kind === "claude-code") {
-      if (!val) return toast("✗ give the session a directory");
-      adapter.baseRoot = val;
-      scopes.push({ kind: "fs", root: val, mode: m });
-    } else if (kind === "ssh-exec") {
-      var parts = val.split("@");
-      if (parts.length !== 2) return toast("✗ ssh needs user@host");
-      scopes.push({ kind: "ssh", user: parts[0], host: parts[1] });
-    } else if (kind === "scoped-git") {
-      if (!val) return toast("✗ give the session a repo url");
-      scopes.push({ kind: "repo", url: val, mode: m });
-    }
-    var ttl;
-    try { ttl = parseDuration($("s-ttl").value.trim() || ""); } catch (e) { return toast("✗ " + e.message); }
-    api("POST", "/sessions", { toParty: $("s-peer").value, ttlSeconds: ttl, agent: { adapter: adapter }, scopes: scopes })
-      .then(function (r) {
-        toast("✓ Session " + r.session.id + " — agent " + r.offer.id + " self-destructs in " + $("s-ttl").value);
-        $("s-scope").value = ""; $("s-ttl").value = "";
-        refresh();
-      }).catch(function (e) { toast("✗ " + e.message); });
-  };
-
-  $("btn-offer").onclick = function () {
-    var id = $("a-id").value.trim();
-    if (!id) return toast("✗ give the agent an id");
-    var adapter = { kind: $("a-adapter").value };
-    if ($("a-root").value.trim()) adapter.baseRoot = $("a-root").value.trim();
-    api("POST", "/agents", { id: id, adapter: adapter }).then(function () {
-      toast("✓ Offering " + id + " — grant a party access to use it");
-      $("a-id").value = ""; $("a-root").value = "";
-      refresh();
-    }).catch(function (e) { toast("✗ " + e.message); });
-  };
-
+  // ---------- advanced ----------
+  $("adv-toggle").onclick = function () { $("advanced").style.display = "flex"; };
+  $("adv-close").onclick = function () { $("advanced").style.display = "none"; };
+  $("advanced").onclick = function (e) { if (e.target === $("advanced")) $("advanced").style.display = "none"; };
   $("btn-ch-tg").onclick = function () {
     var env = $("ch-tg-env").value.trim();
-    if (!env) return toast("✗ name the env var that holds the bot token");
-    var body = { kind: "telegram", tokenEnv: env };
-    var chats = $("ch-tg-chats").value.trim();
-    if (chats) body.allowedChats = chats.split(",").map(function (c) { return c.trim(); });
-    api("POST", "/channels", body).then(function () { toast("✓ Telegram saved — restart the node to start it"); refresh(); })
-      .catch(function (e) { toast("✗ " + e.message); });
+    if (!env) return toast("⛔ name the env var holding the bot token");
+    api("POST", "/channels", { kind: "telegram", tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start Telegram"); })
+      .catch(function (e) { toast("⛔ " + e.message); });
   };
-
   $("btn-ch-gl").onclick = function () {
     var host = $("ch-gl-host").value.trim();
     var env = $("ch-gl-env").value.trim();
-    if (!host || !env) return toast("✗ GitLab needs a host and a token env var");
-    var body = { kind: "gitlab", host: host, tokenEnv: env };
-    var sec = $("ch-gl-secret").value.trim();
-    if (sec) body.webhookSecretEnv = sec;
-    api("POST", "/channels", body).then(function () { toast("✓ GitLab saved — restart the node to start it"); refresh(); })
-      .catch(function (e) { toast("✗ " + e.message); });
+    if (!host || !env) return toast("⛔ GitLab needs a host and a token env var");
+    api("POST", "/channels", { kind: "gitlab", host: host, tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start GitLab"); })
+      .catch(function (e) { toast("⛔ " + e.message); });
   };
-
-  // "What can I actually do here?" — the asking side's view of a peer:
-  // their agents, and the grants THEY extended to us. Cached per peer,
-  // reloaded on selection.
-  var peerGrantsCache = {};
-  var USAGE = {
-    "scoped-fs": 'try: "list" or "read <path>"',
-    "scoped-git": 'try: "branches" or "log 10"',
-    "ssh-exec": "type the command to run on their server",
-    "claude-code": "describe the work in plain language",
-    "echo": "connectivity check — replies with what you send",
-    "session": "",
-  };
-  function agentHint(tags) {
-    for (var i = 0; i < (tags || []).length; i++) {
-      if (USAGE[tags[i]]) return USAGE[tags[i]];
-    }
-    return "";
-  }
-  function loadPeerGrants(peerName) {
-    if (!peerName || peerName.indexOf("—") === 0) return;
-    api("GET", "/peer-grants?peer=" + encodeURIComponent(peerName)).then(function (info) {
-      peerGrantsCache[peerName] = info;
-      renderPeerGrants(info);
-    }).catch(function () { /* peer offline */ });
-  }
-  function renderPeerGrants(info) {
-    if ($("t-peer").value !== info.peer) return;
-    var grantedIds = {};
-    (info.grantedToMe || []).forEach(function (g) {
-      (g.agentIds || []).forEach(function (id) { grantedIds[id] = g; });
-    });
-    // Agent picker = THEIR agents, granted ones first and marked.
-    var sel = $("t-agent");
-    var current = sel.value;
-    sel.innerHTML = "";
-    var agents = (info.agents || []).filter(function (a) { return a.id !== "echo"; }).sort(function (a, b) {
-      return (grantedIds[b.id] ? 1 : 0) - (grantedIds[a.id] ? 1 : 0);
-    });
-    agents.forEach(function (a) {
-      var o = document.createElement("option");
-      o.value = a.id;
-      o.textContent = a.id + (grantedIds[a.id] ? " ✓ granted" : " (not granted — will be denied)");
-      if (a.id === current) o.selected = true;
-      sel.appendChild(o);
-    });
-    var box = $("t-granted");
-    box.innerHTML = "";
-    if (!(info.grantedToMe || []).length) {
-      box.innerHTML = '<div class="hint">⛔ ' + esc(info.peer) + " hasn't granted you anything yet. Grants are made on THEIR console (card 2) — ask them to grant you an agent.</div>";
-      return;
-    }
-    (info.grantedToMe || []).forEach(function (g) {
-      var scopeStr = (g.scopes || []).map(function (sc) {
-        if (sc.kind === "fs") return sc.root + " (" + (sc.mode === "rw" ? "read-write" : "read-only") + ")";
-        if (sc.kind === "ssh") return "server " + sc.user + "@" + sc.host;
-        if (sc.kind === "repo") return "repo " + sc.url;
-        if (sc.kind === "skill") return "skill " + sc.skillId;
-        return sc.kind;
-      }).join(" · ");
-      var div = document.createElement("div");
-      div.className = "item";
-      div.innerHTML = '<span>✓ you may use <b>' + esc(g.agentIds.join(", ")) + "</b>" +
-        ' <span class="meta">' + esc(scopeStr || "no resource scopes") + "</span>" +
-        (g.expiresAt ? ' <span class="ttl">' + countdown(g.expiresAt) + "</span>" : "") + "</span>";
-      box.appendChild(div);
-    });
-    updateMsgHint();
-  }
-  function updateMsgHint() {
-    var peer = peerGrantsCache[$("t-peer").value];
-    if (!peer) return;
-    var chosen = ($("t-agent").value || "");
-    var agent = (peer.agents || []).find(function (a) { return a.id === chosen; });
-    $("t-msg").placeholder = agent ? (agentHint(agent.tags) || "your message to " + chosen) : "pick an agent first";
-  }
-  $("t-peer").onchange = function () { loadPeerGrants($("t-peer").value); };
-  $("t-agent").onchange = updateMsgHint;
-
-  $("btn-task").onclick = function () {
-    var btn = $("btn-task");
-    btn.disabled = true;
-    var reply = $("t-reply");
-    reply.style.display = "none";
-    api("POST", "/task", {
-      peer: $("t-peer").value,
-      agent: $("t-agent").value.trim() || undefined,
-      message: $("t-msg").value,
-    }).then(function (r) {
-      reply.style.display = "block";
-      reply.textContent = r.content;
-    }).catch(function (e) {
-      reply.style.display = "block";
-      reply.textContent = "⛔ " + e.message;
-    }).finally(function () {
-      btn.disabled = false;
+  $("btn-offer").onclick = function () {
+    var id = $("a-id").value.trim();
+    if (!id) return toast("⛔ give the agent an id");
+    var adapter = { kind: $("a-adapter").value };
+    if ($("a-root").value.trim()) adapter.baseRoot = $("a-root").value.trim();
+    api("POST", "/agents", { id: id, adapter: adapter }).then(function () {
+      toast("✓ Offering " + id);
+      $("a-id").value = ""; $("a-root").value = "";
       refresh();
-      loadPeerGrants($("t-peer").value); // grants may have changed on their side
-    });
+    }).catch(function (e) { toast("⛔ " + e.message); });
   };
 
+  // ---------- poll loop ----------
+  var lastPeerLoad = 0;
+  function refresh() {
+    return api("GET", "/status").then(function (s) {
+      render(s);
+      // refresh the selected peer's grants/shares every few cycles
+      if (state.selected && Date.now() - lastPeerLoad > 7000) {
+        lastPeerLoad = Date.now();
+        loadPeer(state.selected);
+      }
+    }).catch(function () { /* node restarting */ });
+  }
   refresh();
   setInterval(refresh, 2500);
 })();

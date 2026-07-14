@@ -369,6 +369,101 @@ export class AgentinaNode {
     }
   }
 
+  // ---------- shares: the human-level API ----------
+  // Users think "share this folder with Badis, read-only, for a week" —
+  // not "grant an agent an fs scope". A share creates the right agent
+  // and grant (or a self-destructing session when a duration is given);
+  // stopping it tears everything down. Grants/sessions stay the
+  // enforcement truth underneath.
+
+  createShare(opts: {
+    peer: string
+    kind: "folder" | "server" | "repo"
+    value: string
+    mode?: "ro" | "rw"
+    durationSeconds?: number
+  }): { id: string; agentId: string; expiresAt?: string } {
+    const mode = opts.mode ?? "ro"
+    let adapter: AdapterSpec
+    let scope: Scope
+    if (opts.kind === "folder") {
+      adapter = { kind: "scoped-fs", baseRoot: opts.value }
+      scope = { kind: "fs", root: opts.value, mode }
+    } else if (opts.kind === "server") {
+      const [user, host] = opts.value.split("@")
+      if (!user || !host) throw new Error("server share expects user@host")
+      adapter = { kind: "ssh-exec" }
+      scope = { kind: "ssh", host, user }
+    } else {
+      adapter = { kind: "scoped-git" }
+      scope = { kind: "repo", url: opts.value, mode }
+    }
+
+    if (opts.durationSeconds) {
+      const r = this.openSession({
+        toParty: opts.peer,
+        ttlSeconds: opts.durationSeconds,
+        agent: { id: `${opts.kind}-${newId("x").slice(-6)}`, adapter },
+        scopes: [scope],
+      })
+      return { id: r.session.id, agentId: r.offer.id, expiresAt: r.session.expiresAt }
+    }
+
+    const agentId = `${opts.kind}-${newId("x").slice(-6)}`
+    this.addAgent({
+      id: agentId,
+      partyId: this.party.id,
+      name: `${opts.kind}: ${opts.value}`,
+      description: `Shared ${opts.kind} (${mode})`,
+      skills: [{ id: agentId, name: agentId, description: `${opts.kind} share`, tags: [adapter.kind] }],
+      lifecycle: "persistent",
+      adapter,
+    })
+    const grant = this.grantAccess(opts.peer, [agentId], [scope])
+    return { id: grant.id, agentId }
+  }
+
+  /** Friendly view of everything shared with a party (grants + sessions). */
+  listShares(partyId: string): Array<Record<string, unknown>> {
+    const sessionByGrant = new Map<string, CollabSession>()
+    for (const s of this.state.data.sessions) for (const g of s.grants) sessionByGrant.set(g, s)
+    return this.grants.list()
+      .filter((g) => g.toParty === partyId)
+      .map((g) => {
+        const sc = g.scopes[0]
+        const session = sessionByGrant.get(g.id)
+        return {
+          id: session ? session.id : g.id,
+          agentId: g.agentIds[0],
+          kind: sc?.kind === "fs" ? "folder" : sc?.kind === "ssh" ? "server" : sc?.kind === "repo" ? "repo" : "agent",
+          value: sc?.kind === "fs" ? sc.root : sc?.kind === "ssh" ? `${sc.user}@${sc.host}` : sc?.kind === "repo" ? sc.url : g.agentIds.join(", "),
+          mode: sc && "mode" in sc ? sc.mode : undefined,
+          status: session ? session.status : g.status,
+          expiresAt: g.expiresAt,
+          temporary: Boolean(session),
+        }
+      })
+  }
+
+  /** Stop a share: sessions close (agent + grant die), plain grants are
+   *  revoked and their dedicated share-agent removed. */
+  stopShare(id: string): boolean {
+    if (id.startsWith("s_")) return this.closeSession(id, "stopped by owner")
+    const grant = this.grants.get(id)
+    if (!grant || !this.grants.revoke(id)) return false
+    for (const agentId of grant.agentIds) {
+      const stillGranted = this.grants.list().some((g) => g.status === "active" && g.agentIds.includes(agentId))
+      const isShareAgent = /^(folder|server|repo)-/.test(agentId)
+      if (isShareAgent && !stillGranted) {
+        this.state.data.agents = this.state.data.agents.filter((a) => a.id !== agentId)
+        this.adapters.delete(agentId)
+      }
+    }
+    this.state.save()
+    this.audit.append({ kind: "grant-revoke", decision: "allowed", partyId: grant.toParty, grantId: id })
+    return true
+  }
+
   /** Owner-authored grant to a paired party (active immediately).
    *  `toParty` accepts a party id or a peer name. */
   grantAccess(toParty: string, agentIds: string[], scopes: Scope[], expiresAt?: string) {
@@ -558,6 +653,37 @@ export class AgentinaNode {
         const joined = await this.join(String(body.link ?? ""))
         return this.json(res, 200, joined)
       }
+      case "POST /agentina/v1/shares": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const kind = String(body.kind ?? "")
+        if (!body.peer || !["folder", "server", "repo"].includes(kind) || !body.value) {
+          return this.json(res, 400, { error: "Missing: peer, kind (folder|server|repo), value" })
+        }
+        const share = this.createShare({
+          peer: String(body.peer),
+          kind: kind as "folder" | "server" | "repo",
+          value: String(body.value),
+          mode: body.mode === "rw" ? "rw" : "ro",
+          durationSeconds: body.durationSeconds ? Number(body.durationSeconds) : undefined,
+        })
+        return this.json(res, 201, share)
+      }
+      case "GET /agentina/v1/shares": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const url = new URL(req.url ?? "/", "http://x")
+        const peerName = url.searchParams.get("peer") ?? ""
+        const partyId = this.resolvePartyId(peerName)
+        if (!partyId) return this.json(res, 404, { error: `Unknown peer: ${peerName}` })
+        return this.json(res, 200, { shares: this.listShares(partyId) })
+      }
+      case "POST /agentina/v1/shares/stop": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        if (!this.stopShare(String(body.id ?? ""))) return this.json(res, 404, { error: "No active share with that id" })
+        return this.json(res, 200, { stopped: body.id })
+      }
+
       case "POST /agentina/v1/sessions": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
