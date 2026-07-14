@@ -15,6 +15,7 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code"
 import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
+import { listSkillNames } from "./skills"
 
 // --- AgentinaNode: one party's node ---
 //
@@ -378,12 +379,31 @@ export class AgentinaNode {
 
   createShare(opts: {
     peer: string
-    kind: "folder" | "server" | "repo"
+    kind: "folder" | "server" | "repo" | "agent"
     value: string
+    /** For kind "agent": restrict access to this path inside the agent's workspace. */
+    path?: string
     mode?: "ro" | "rw"
     durationSeconds?: number
   }): { id: string; agentId: string; expiresAt?: string } {
     const mode = opts.mode ?? "ro"
+
+    // Sharing one of YOUR defined agents: the grant covers that agent,
+    // scoped to the given path (or its whole workspace), and expires
+    // with the duration. The agent itself is permanent — only the
+    // counterparty's access is time-boxed.
+    if (opts.kind === "agent") {
+      const offer = this.state.data.agents.find((a) => a.id === opts.value)
+      if (!offer) throw new Error(`Unknown agent: ${opts.value}`)
+      const root = opts.path ?? offer.adapter?.baseRoot
+      const scopes: Scope[] = root ? [{ kind: "fs", root, mode }] : []
+      const expiresAt = opts.durationSeconds
+        ? new Date(Date.now() + opts.durationSeconds * 1000).toISOString()
+        : undefined
+      const grant = this.grantAccess(opts.peer, [offer.id], scopes, expiresAt)
+      return { id: grant.id, agentId: offer.id, expiresAt }
+    }
+
     let adapter: AdapterSpec
     let scope: Scope
     if (opts.kind === "folder") {
@@ -491,7 +511,11 @@ export class AgentinaNode {
           built = new ScopedFsAdapter(offer.adapter.baseRoot ?? this.state.stateDir)
           break
         case "claude-code":
-          built = new ClaudeCodeAdapter({ baseRoot: offer.adapter.baseRoot, model: offer.adapter.model })
+          built = new ClaudeCodeAdapter({
+            baseRoot: offer.adapter.baseRoot,
+            model: offer.adapter.model,
+            systemPrompt: offer.adapter.systemPrompt,
+          })
           break
         case "ssh-exec":
           built = new SshExecAdapter()
@@ -657,13 +681,14 @@ export class AgentinaNode {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
         const kind = String(body.kind ?? "")
-        if (!body.peer || !["folder", "server", "repo"].includes(kind) || !body.value) {
-          return this.json(res, 400, { error: "Missing: peer, kind (folder|server|repo), value" })
+        if (!body.peer || !["agent", "folder", "server", "repo"].includes(kind) || !body.value) {
+          return this.json(res, 400, { error: "Missing: peer, kind (agent|folder|server|repo), value" })
         }
         const share = this.createShare({
           peer: String(body.peer),
-          kind: kind as "folder" | "server" | "repo",
+          kind: kind as "agent" | "folder" | "server" | "repo",
           value: String(body.value),
+          path: body.path ? String(body.path) : undefined,
           mode: body.mode === "rw" ? "rw" : "ro",
           durationSeconds: body.durationSeconds ? Number(body.durationSeconds) : undefined,
         })
@@ -739,15 +764,27 @@ export class AgentinaNode {
         const id = String(body.id ?? "")
         if (!id) return this.json(res, 400, { error: "Missing: id" })
         const name = String(body.name ?? id)
-        const adapterSpec = (body.adapter ?? undefined) as AgentOffer["adapter"]
+        // Accept both the raw adapter object and the friendly agent
+        // fields (provider/workspace/prompt/model) the console sends.
+        const raw = (body.adapter ?? {}) as Partial<AdapterSpec>
+        const adapterSpec: AdapterSpec = {
+          kind: (raw.kind ?? (body.provider as AdapterSpec["kind"]) ?? "claude-code"),
+          baseRoot: raw.baseRoot ?? (body.workspace ? String(body.workspace) : undefined),
+          model: raw.model ?? (body.model ? String(body.model) : undefined),
+          systemPrompt: raw.systemPrompt ?? (body.systemPrompt ? String(body.systemPrompt) : undefined),
+        }
+        const skillNames = adapterSpec.baseRoot ? listSkillNames(adapterSpec.baseRoot) : []
         const offer: AgentOffer = {
           id,
           partyId: this.party.id,
           name,
-          description: String(body.description ?? `${name} — offered by ${this.party.name}`),
-          skills: [{ id, name, description: String(body.description ?? name), tags: adapterSpec ? [adapterSpec.kind] : [] }],
+          description: String(body.description ?? adapterSpec.systemPrompt?.slice(0, 120) ?? `${name} — offered by ${this.party.name}`),
+          skills: [
+            { id, name, description: String(body.description ?? name), tags: [adapterSpec.kind] },
+            ...skillNames.map((s) => ({ id: `${id}:${s}`, name: s, description: `skill file ${s}`, tags: ["skill"] })),
+          ],
           lifecycle: "persistent",
-          ...(adapterSpec ? { adapter: adapterSpec } : {}),
+          adapter: adapterSpec,
         }
         this.addAgent(offer)
         return this.json(res, 201, offer)
@@ -828,7 +865,12 @@ export class AgentinaNode {
           protocol: PROTOCOL_VERSION,
           agents: this.state.data.agents.map((a) => ({
             id: a.id,
+            name: a.name,
             adapter: a.adapter?.kind ?? "echo",
+            workspace: a.adapter?.baseRoot,
+            model: a.adapter?.model,
+            hasPrompt: Boolean(a.adapter?.systemPrompt),
+            skillFiles: a.adapter?.baseRoot ? listSkillNames(a.adapter.baseRoot) : [],
             session: typeof a.lifecycle === "object" ? a.lifecycle.session : undefined,
           })),
           peers: this.mesh.directory(),

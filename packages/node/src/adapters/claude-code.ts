@@ -2,6 +2,7 @@ import { spawn } from "node:child_process"
 import { resolve } from "node:path"
 import type { Scope, AgentOffer } from "@agentina-mesh/protocol"
 import type { AgentAdapter, AdapterTask } from "../adapter"
+import { loadSkillsText } from "../skills"
 
 // --- ClaudeCodeAdapter: run tasks through the Claude Code CLI ---
 //
@@ -22,7 +23,7 @@ const RW_TOOLS = [...RO_TOOLS, "Write", "Edit"]
 const TURN_TIMEOUT_MS = 10 * 60 * 1000
 
 export class ClaudeCodeAdapter implements AgentAdapter {
-  constructor(private opts: { binary?: string; model?: string; baseRoot?: string } = {}) {}
+  constructor(private opts: { binary?: string; model?: string; baseRoot?: string; systemPrompt?: string } = {}) {}
 
   async execute(offer: AgentOffer, task: AdapterTask): Promise<{ content: string }> {
     const fsScopes = (task.policy?.scopes ?? []).filter(
@@ -46,10 +47,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     delete env.ANTHROPIC_API_KEY
     delete env.ANTHROPIC_API_KEY_OLD
 
+    // Personality + skills, agentx-style: the offer's systemPrompt plus
+    // any SKILL.md / skills/*.md in the agent's WORKSPACE (baseRoot, not
+    // the granted cwd — skills belong to the owner, the jail belongs to
+    // the grant).
+    const skillsText = loadSkillsText(resolve(this.opts.baseRoot ?? cwd))
+    const appendParts = [this.opts.systemPrompt?.trim(), skillsText].filter(Boolean)
     const args = [
       "-p", task.message,
       "--output-format", "json",
       "--allowedTools", tools.join(","),
+      ...(appendParts.length ? ["--append-system-prompt", appendParts.join("\n\n")] : []),
       ...(this.opts.model ? ["--model", this.opts.model] : []),
     ]
 

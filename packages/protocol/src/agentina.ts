@@ -70,10 +70,14 @@ export interface Grant {
  *  adapter registration (host code) overrides this. */
 export interface AdapterSpec {
   kind: "echo" | "scoped-fs" | "claude-code" | "ssh-exec" | "scoped-git"
-  /** Home directory for fs-flavored adapters (the outermost root;
-   *  grants confine within it per party). */
+  /** The agent's workspace — home directory for fs-flavored adapters
+   *  (the outermost root; grants confine within it per party). AI
+   *  agents load their skills from <baseRoot>/skills/*.md + SKILL.md. */
   baseRoot?: string
   model?: string
+  /** The agent's personality/instructions — appended to the provider's
+   *  system prompt (agentx-style). */
+  systemPrompt?: string
 }
 
 /** An agent a party exposes to the mesh. `lifecycle` distinguishes

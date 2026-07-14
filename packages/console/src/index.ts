@@ -166,6 +166,7 @@ export const CONSOLE_HTML = `<!doctype html>
     <div id="contacts"></div>
     <div class="foot">
       <button id="btn-add" class="ghost">+ Invite someone</button>
+      <button id="agents-toggle" class="ghost" style="margin-top:8px;width:100%">My agents</button>
       <button id="adv-toggle" class="ghost">Advanced</button>
     </div>
   </div>
@@ -196,12 +197,15 @@ export const CONSOLE_HTML = `<!doctype html>
       <div id="share-form">
         <div class="hint" style="margin-bottom:10px"><b style="color:var(--ax-text-2)">Share something new.</b> Their agents can then use it — exactly this, nothing else, and you can stop it anytime.</div>
         <div class="row">
-          <select id="sh-kind" style="max-width:130px">
+          <select id="sh-kind" style="max-width:150px">
+            <option value="agent">one of my agents</option>
             <option value="folder">a folder</option>
             <option value="server">a server</option>
             <option value="repo">a repository</option>
           </select>
+          <select id="sh-agent" style="display:none"></select>
           <input id="sh-value" placeholder="/path/to/folder">
+          <input id="sh-path" placeholder="restrict to path (optional)" style="display:none">
         </div>
         <div class="row">
           <select id="sh-mode" style="max-width:130px">
@@ -237,19 +241,36 @@ export const CONSOLE_HTML = `<!doctype html>
     <div class="row"><input id="ch-tg-env" placeholder="Telegram token env var (e.g. TG_BOT_TOKEN)"><button class="ghost" id="btn-ch-tg">Save</button></div>
     <div class="row"><input id="ch-gl-host" placeholder="GitLab host url"><input id="ch-gl-env" placeholder="token env var" style="max-width:130px"><button class="ghost" id="btn-ch-gl">Save</button></div>
     <div class="hint">Secrets are read from environment variables, never stored in files. Restart the node after saving.</div>
-    <h3>Offer a custom agent</h3>
-    <div class="row">
-      <input id="a-id" placeholder="agent id" style="max-width:120px">
-      <select id="a-adapter" style="max-width:130px">
-        <option value="claude-code">claude-code</option>
-        <option value="scoped-fs">scoped-fs</option>
-        <option value="ssh-exec">ssh-exec</option>
-        <option value="scoped-git">scoped-git</option>
-      </select>
-      <input id="a-root" placeholder="base directory">
-      <button class="ghost" id="btn-offer">Offer</button>
+
+  </div>
+</div>
+
+<div id="myagents" style="display:none;position:fixed;inset:0;background:oklch(0.10 0.01 265 / 0.7);z-index:40;align-items:center;justify-content:center">
+  <div class="panel" style="background:var(--ax-surface);border:1px solid var(--ax-border-2);border-radius:14px;padding:22px;width:min(600px,92vw);max-height:86vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <b>My agents</b>
+      <button class="ghost" id="agents-close">Close</button>
     </div>
-    <div class="hint">Shares create agents automatically — this is for custom ones (e.g. an AI worker).</div>
+    <div class="hint" style="margin-bottom:10px">Your AI workers. Each has a provider, a workspace it lives in, a personality, and skills (markdown files in <span class="mono">&lt;workspace&gt;/skills/</span> — edit them anytime, the next answer uses them). Share an agent with a contact from the "What I share" tab.</div>
+    <div id="agents-list" style="margin-bottom:16px"></div>
+    <div style="background:var(--ax-bg-elev);border:1px solid var(--ax-border);border-radius:10px;padding:14px">
+      <b style="font-size:12.5px">New agent</b>
+      <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+        <input id="ag-id" placeholder="name (e.g. coder)" style="max-width:140px;flex:1">
+        <select id="ag-provider" style="max-width:150px">
+          <option value="claude-code">Claude (CLI)</option>
+          <option value="scoped-fs">files only (no AI)</option>
+        </select>
+        <input id="ag-model" placeholder="model (optional)" style="max-width:140px;flex:1">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input id="ag-workspace" placeholder="workspace folder, e.g. /home/me/projects/acme" style="flex:1">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input id="ag-prompt" placeholder="personality / instructions (optional) — e.g. You are Acme&#39;s frontend specialist…" style="flex:1">
+      </div>
+      <button id="ag-create">Create agent</button>
+    </div>
   </div>
 </div>
 
@@ -481,19 +502,81 @@ export const CONSOLE_HTML = `<!doctype html>
       listEl.appendChild(div);
     });
   }
+  function myAgents() {
+    return ((state.status && state.status.agents) || []).filter(function (a) {
+      return a.id !== "echo" && !a.session && !/^(folder|server|repo)-/.test(a.id);
+    });
+  }
   $("sh-kind").onchange = function () {
+    var kind = $("sh-kind").value;
+    var isAgent = kind === "agent";
+    $("sh-agent").style.display = isAgent ? "" : "none";
+    $("sh-path").style.display = isAgent ? "" : "none";
+    $("sh-value").style.display = isAgent ? "none" : "";
+    if (isAgent) {
+      var sel = $("sh-agent");
+      sel.innerHTML = "";
+      myAgents().forEach(function (a) {
+        var o = document.createElement("option");
+        o.value = a.id; o.textContent = "🤖 " + a.id + " (" + a.adapter + ")";
+        sel.appendChild(o);
+      });
+      if (!sel.options.length) {
+        var o = document.createElement("option");
+        o.value = ""; o.textContent = "— create one in My agents first —";
+        sel.appendChild(o);
+      }
+    }
     var ph = { folder: "/path/to/folder", server: "user@host", repo: "https://… or git@…" };
-    $("sh-value").placeholder = ph[$("sh-kind").value];
+    $("sh-value").placeholder = ph[kind] || "";
+  };
+  $("agents-toggle").onclick = function () { renderMyAgents(); $("myagents").style.display = "flex"; };
+  $("agents-close").onclick = function () { $("myagents").style.display = "none"; };
+  $("myagents").onclick = function (e) { if (e.target === $("myagents")) $("myagents").style.display = "none"; };
+  function renderMyAgents() {
+    var el = $("agents-list");
+    var agents = myAgents();
+    el.innerHTML = agents.length ? "" : '<div class="hint">No agents yet — create your first below.</div>';
+    agents.forEach(function (a) {
+      var div = document.createElement("div");
+      div.className = "share-item";
+      div.innerHTML = "<span>🤖</span>" +
+        '<span class="what"><b>' + esc(a.id) + "</b> " +
+        '<span class="meta">' + esc(a.adapter) + (a.model ? " · " + esc(a.model) : "") +
+        (a.workspace ? " · " + esc(a.workspace) : "") +
+        (a.hasPrompt ? " · has personality" : "") +
+        " · " + ((a.skillFiles || []).length) + " skill file(s)</span></span>";
+      el.appendChild(div);
+    });
+  }
+  $("ag-create").onclick = function () {
+    var id = $("ag-id").value.trim();
+    var ws = $("ag-workspace").value.trim();
+    if (!id) return toast("⛔ give the agent a name");
+    if (!ws) return toast("⛔ every agent needs a workspace folder");
+    api("POST", "/agents", {
+      id: id,
+      provider: $("ag-provider").value,
+      workspace: ws,
+      model: $("ag-model").value.trim() || undefined,
+      systemPrompt: $("ag-prompt").value.trim() || undefined,
+    }).then(function () {
+      toast("✓ Agent " + id + " created — share it from a contact&#39;s &#39;What I share&#39; tab");
+      $("ag-id").value = ""; $("ag-workspace").value = ""; $("ag-prompt").value = ""; $("ag-model").value = "";
+      refresh().then(renderMyAgents);
+    }).catch(function (e) { toast("⛔ " + e.message); });
   };
   $("sh-go").onclick = function () {
-    var value = $("sh-value").value.trim();
-    if (!value) return toast("⛔ what do you want to share?");
+    var kind = $("sh-kind").value;
+    var value = kind === "agent" ? $("sh-agent").value : $("sh-value").value.trim();
+    if (!value) return toast(kind === "agent" ? "⛔ create an agent first (My agents)" : "⛔ what do you want to share?");
     var body = {
       peer: state.selected,
-      kind: $("sh-kind").value,
+      kind: kind,
       value: value,
       mode: $("sh-mode").value,
     };
+    if (kind === "agent" && $("sh-path").value.trim()) body.path = $("sh-path").value.trim();
     var dur = $("sh-for").value;
     if (dur) body.durationSeconds = Number(dur);
     api("POST", "/shares", body).then(function () {
@@ -576,17 +659,6 @@ export const CONSOLE_HTML = `<!doctype html>
     api("POST", "/channels", { kind: "gitlab", host: host, tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start GitLab"); })
       .catch(function (e) { toast("⛔ " + e.message); });
   };
-  $("btn-offer").onclick = function () {
-    var id = $("a-id").value.trim();
-    if (!id) return toast("⛔ give the agent an id");
-    var adapter = { kind: $("a-adapter").value };
-    if ($("a-root").value.trim()) adapter.baseRoot = $("a-root").value.trim();
-    api("POST", "/agents", { id: id, adapter: adapter }).then(function () {
-      toast("✓ Offering " + id);
-      $("a-id").value = ""; $("a-root").value = "";
-      refresh();
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
 
   // ---------- poll loop ----------
   var lastPeerLoad = 0;
@@ -600,6 +672,7 @@ export const CONSOLE_HTML = `<!doctype html>
       }
     }).catch(function () { /* node restarting */ });
   }
+  $("sh-kind").onchange();
   refresh();
   setInterval(refresh, 2500);
 })();
