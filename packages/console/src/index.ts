@@ -1,21 +1,22 @@
 // --- The agentina console ---
 //
-// Design principles (after the "overcomplicated" feedback — this is how
-// a Google/Anthropic product team would shape it):
-//   1. CONTACTS, NOT CONCEPTS — the home surface is the people you
-//      collaborate with, like a chat app. Grants/sessions/adapters are
-//      machinery; users see "shares" and "asking".
-//   2. PROGRESSIVE DISCLOSURE — each state shows exactly one next step.
-//      No peers → a single onboarding card. A contact with nothing
-//      shared → an empty state that says what to do. Advanced things
-//      (channels, manual agents, raw feed) live behind "Advanced".
-//   3. ONE VERB: SHARE — "share this folder, read-only, for a week"
-//      creates the agent + grant (+ self-destructing session) under the
-//      hood via the node's /shares API.
+// v3 "minimalist redesign": a friendly, mobile-shaped, light-theme
+// console — one 520px column, one screen at a time, zero jargon.
+// Design principles carried over from v2 and sharpened:
+//   1. CONTACTS, NOT CONCEPTS — home is the people you work with.
+//      Grants/sessions/adapters stay machinery; users see "shares",
+//      "asking", and an activity log in plain sentences.
+//   2. ONE SCREEN, ONE JOB — every flow is a short wizard (share it,
+//      new agent, invite) with a progress bar and a big next button.
+//   3. HONEST UI — nothing is simulated. Every button calls the node's
+//      real /agentina/v1 API; denials and offline states show as what
+//      they are.
 //
-// Served at GET / (loopback-only). Vanilla JS, no CDN, air-gap safe.
+// Served at GET / (loopback-only). Vanilla JS, no CDN dependencies —
+// Google-font links degrade to system fonts when offline/air-gapped.
 // NOTE: the page lives in a TS template literal — the inline <script>
-// avoids backticks and dollar-brace on purpose; concatenation only.
+// avoids backticks, dollar-brace, and ALL backslash escapes on purpose;
+// string concatenation only (see console.test.ts for the regression).
 
 export const CONSOLE_HTML = `<!doctype html>
 <html lang="en">
@@ -23,330 +24,164 @@ export const CONSOLE_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentina</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --ax-bg: oklch(0.16 0.010 265);
-    --ax-bg-elev: oklch(0.19 0.012 265);
-    --ax-surface: oklch(0.21 0.012 265);
-    --ax-surface-2: oklch(0.24 0.014 265);
-    --ax-surface-3: oklch(0.27 0.016 265);
-    --ax-border: oklch(0.29 0.014 265);
-    --ax-border-2: oklch(0.35 0.016 265);
-    --ax-text: oklch(0.95 0.005 265);
-    --ax-text-2: oklch(0.80 0.008 265);
-    --ax-muted: oklch(0.60 0.010 265);
-    --ax-accent: oklch(0.78 0.13 165);
-    --ax-accent-2: oklch(0.55 0.11 165);
-    --ax-warn: oklch(0.80 0.14 75);
-    --ax-err: oklch(0.68 0.19 25);
-    --ax-info: oklch(0.78 0.10 220);
-    --ax-radius: 6px;
-    --ax-radius-lg: 10px;
-    --ax-font: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
-    --ax-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
-    color-scheme: dark;
-  }
-  * { box-sizing: border-box; margin: 0; }
-  html, body { height: 100%; }
-  body { background: var(--ax-bg); color: var(--ax-text); font: 13.5px/1.6 var(--ax-font); display: flex; flex-direction: column; }
-  button { background: var(--ax-accent); color: oklch(0.16 0.02 165); border: 0; border-radius: var(--ax-radius); padding: 7px 14px; font: 600 12.5px var(--ax-font); cursor: pointer; white-space: nowrap; }
-  button:hover { filter: brightness(1.08); }
-  button.ghost { background: var(--ax-surface-2); color: var(--ax-text-2); border: 1px solid var(--ax-border-2); }
-  button.danger { background: transparent; color: var(--ax-err); border: 1px solid var(--ax-err); }
-  button.link { background: none; border: none; color: var(--ax-info); padding: 0; font-weight: 500; }
-  button:disabled { opacity: .45; cursor: default; }
-  input, select { background: var(--ax-bg-elev); color: var(--ax-text); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 7px 10px; font: 13px var(--ax-font); min-width: 0; }
-  input:focus, select:focus { outline: none; border-color: var(--ax-accent-2); }
-  .hint { font-size: 12px; color: var(--ax-muted); }
-  .mono { font-family: var(--ax-mono); }
-  .ttl { font: 10.5px var(--ax-mono); color: var(--ax-warn); }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--ax-border); background: var(--ax-bg-elev); }
-  header h1 { font-size: 14px; font-weight: 600; }
-  header h1 span { color: var(--ax-accent); }
-  #me { color: var(--ax-text-2); font-weight: 600; }
-  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ax-surface-3); border: 1px solid var(--ax-accent-2); border-radius: var(--ax-radius-lg); padding: 9px 16px; font-size: 12.5px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 50; max-width: 80vw; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #f8f9fa; font-family: 'Outfit', -apple-system, 'Segoe UI', system-ui, sans-serif; color: #202124; }
+  a { color: #2979FF; text-decoration: none; font-weight: 700; }
+  a:hover { color: #1B5FD9; }
+  button { font-family: inherit; }
+  input { font-family: inherit; }
+  input::placeholder { color: #9aa0a6; }
+  .wrap { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 0 20px 48px; }
+  .col { width: 100%; max-width: 520px; display: flex; flex-direction: column; flex: 1; }
+  .mono { font-family: 'Roboto Mono', ui-monospace, 'SF Mono', monospace; }
+
+  .title { font-size: 30px; font-weight: 800; letter-spacing: -0.5px; margin: 12px 0 8px; }
+  .title2 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; margin: 16px 0 6px; }
+  .sub { font-size: 17px; color: #5f6368; line-height: 1.5; margin-bottom: 28px; }
+  .sub2 { font-size: 16px; color: #5f6368; line-height: 1.5; margin-bottom: 24px; }
+  .eyebrow { font-size: 14px; font-weight: 700; color: #9aa0a6; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .hint { font-size: 13.5px; color: #9aa0a6; line-height: 1.5; }
+
+  .hdr { display: flex; align-items: center; height: 76px; gap: 14px; }
+  .btn-back { width: 44px; height: 44px; border: 2px solid #e8eaed; border-radius: 50%; background: #ffffff; color: #5f6368; font-size: 19px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex: none; padding: 0; }
+  .btn-back:hover { background: #f1f3f4; }
+
+  .btn { display: flex; align-items: center; justify-content: center; width: 100%; height: 58px; border: none; border-radius: 16px; font-size: 18px; font-weight: 700; cursor: pointer; }
+  .btn-blue { background: #2979FF; color: #ffffff; box-shadow: 0 4px 0 #1B5FD9; }
+  .btn-blue:hover { background: #2168E8; }
+  .btn-blue:active { transform: translateY(3px); box-shadow: 0 1px 0 #1B5FD9; }
+  .btn-green { background: #22B573; color: #ffffff; box-shadow: 0 4px 0 #178F58; }
+  .btn-green:hover { background: #1EA466; }
+  .btn-green:active { transform: translateY(3px); box-shadow: 0 1px 0 #178F58; }
+  .btn-white { background: #ffffff; color: #2979FF; border: 2px solid #dadce0; box-shadow: 0 4px 0 #dadce0; }
+  .btn-white:hover { background: #F2F7FF; }
+  .btn-white:active { transform: translateY(3px); box-shadow: 0 1px 0 #dadce0; }
+  .btn-plain { background: #ffffff; color: #202124; border: 2px solid #dadce0; box-shadow: 0 3px 0 #dadce0; height: 52px; font-size: 16px; }
+  .btn-plain:hover { background: #f8f9fa; }
+  .btn-plain:active { transform: translateY(2px); box-shadow: 0 1px 0 #dadce0; }
+  .linkbtn { border: none; background: none; color: #2979FF; font-size: 14.5px; font-weight: 700; cursor: pointer; padding: 8px; }
+  .linkbtn:hover { color: #1B5FD9; }
+  .mutedbtn { border: none; background: none; color: #9aa0a6; font-size: 13.5px; font-weight: 600; cursor: pointer; padding: 8px; }
+  .mutedbtn:hover { color: #5f6368; }
+
+  .card { display: flex; align-items: center; gap: 16px; width: 100%; background: #ffffff; border: 2px solid #e8eaed; border-radius: 20px; padding: 18px 20px; cursor: pointer; text-align: left; box-shadow: 0 3px 0 #e8eaed; }
+  .card:hover { border-color: #A9CBFF; background: #FAFCFF; }
+  .card:active { transform: translateY(2px); box-shadow: 0 1px 0 #e8eaed; }
+  .card.hov-green:hover { border-color: #A9E8C9; background: #F7FCFA; }
+  .card.hov-amber:hover { border-color: #FFE08A; background: #FFFCF5; }
+  .rowcard { display: flex; align-items: center; gap: 14px; background: #ffffff; border: 2px solid #e8eaed; border-radius: 16px; padding: 14px 16px; }
+  .chev { color: #dadce0; font-size: 22px; font-weight: 700; }
+
+  .avatar { border-radius: 50%; color: #ffffff; display: flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
+  .glyph { border-radius: 14px; display: flex; align-items: center; justify-content: center; font-weight: 800; flex: none; }
+
+  .input { width: 100%; box-sizing: border-box; height: 58px; border: 2px solid #dadce0; border-radius: 16px; padding: 0 20px; font-size: 16px; background: #ffffff; outline: none; }
+  .input:focus { border-color: #2979FF; }
+  .input.mono { font-size: 14px; }
+
+  .pill { font-size: 12.5px; font-weight: 700; border-radius: 999px; padding: 4px 12px; white-space: nowrap; }
+  .chip { display: flex; align-items: center; gap: 6px; border: 2px solid #e8eaed; border-radius: 999px; background: #ffffff; color: #5f6368; font-size: 14px; font-weight: 700; cursor: pointer; padding: 8px 16px; }
+  .chip.sel { border-color: #2979FF; background: #E7F0FF; color: #2979FF; }
+  .chip-sm { border: 2px solid #e8eaed; border-radius: 999px; background: #ffffff; color: #5f6368; font-size: 13px; font-weight: 700; cursor: pointer; padding: 6px 14px; }
+  .chip-sm.sel { border-color: #2979FF; background: #2979FF; color: #ffffff; }
+  .sug { border: 2px solid #e8eaed; border-radius: 999px; background: #ffffff; color: #5f6368; font-size: 14px; font-weight: 600; cursor: pointer; padding: 8px 16px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sug:hover { border-color: #A9CBFF; color: #2979FF; }
+
+  .b-me { align-self: flex-end; max-width: 80%; background: #2979FF; color: #ffffff; border-radius: 18px 18px 4px 18px; padding: 12px 16px; font-size: 15.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .b-them { align-self: flex-start; max-width: 80%; background: #ffffff; border: 2px solid #e8eaed; border-radius: 18px 18px 18px 4px; padding: 12px 16px; font-family: 'Roboto Mono', monospace; font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+  .b-err { align-self: flex-start; max-width: 80%; background: #FEECEC; border: 2px solid #F9C1C1; color: #F23A3A; border-radius: 18px 18px 18px 4px; padding: 12px 16px; font-size: 14.5px; font-weight: 600; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .b-via { align-self: center; font-size: 12.5px; font-weight: 700; color: #9aa0a6; background: #f1f3f4; border-radius: 999px; padding: 6px 16px; max-width: 92%; text-align: center; line-height: 1.5; }
+
+  .code { font-family: 'Roboto Mono', monospace; font-size: 12.5px; background: #f8f9fa; border: 1px solid #e8eaed; border-radius: 8px; padding: 7px 12px; word-break: break-all; }
+  .progress { flex: 1; height: 14px; background: #e8eaed; border-radius: 999px; overflow: hidden; }
+  .progress div { height: 100%; background: #22B573; border-radius: 999px; transition: width .3s; }
+  .toggle { width: 52px; height: 30px; border: none; border-radius: 999px; cursor: pointer; position: relative; padding: 0; flex: none; transition: background .2s; }
+  .toggle div { position: absolute; top: 3px; width: 24px; height: 24px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 3px rgba(32,33,36,.3); transition: left .2s; }
+
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #202124; color: #ffffff; border-radius: 999px; padding: 12px 24px; font-size: 15px; font-weight: 600; z-index: 50; max-width: 80vw; box-shadow: 0 4px 16px rgba(32,33,36,.3); opacity: 0; pointer-events: none; transition: opacity .25s; }
   #toast.show { opacity: 1; }
 
-  /* onboarding (no peers yet) */
-  #onboarding { flex: 1; display: none; align-items: center; justify-content: center; padding: 24px; }
-  #onboarding .panel { max-width: 480px; width: 100%; background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: 14px; padding: 32px; text-align: center; }
-  #onboarding h2 { font-size: 18px; margin-bottom: 6px; }
-  #onboarding p { color: var(--ax-muted); margin-bottom: 22px; }
-  #onboarding .or { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--ax-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  #onboarding .or::before, #onboarding .or::after { content: ""; flex: 1; height: 1px; background: var(--ax-border); }
-  #ob-invite-out { display: none; margin-top: 14px; font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px dashed var(--ax-accent-2); border-radius: var(--ax-radius); padding: 10px; word-break: break-all; text-align: left; }
-  #ob-wait { display: none; margin-top: 10px; color: var(--ax-accent); font-size: 12.5px; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .stack-sm { display: flex; flex-direction: column; gap: 10px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .rail { display: flex; gap: 12px; overflow-x: auto; padding: 4px 2px 12px; scroll-snap-type: x mandatory; }
+  .wordmark { font-family: 'Fredoka', 'Outfit', sans-serif; font-weight: 600; cursor: pointer; user-select: none; letter-spacing: -0.2px; }
+  .dotwrap { position: relative; display: inline-block; color: #F23A3A; font-style: normal; }
+  .hopdot { position: absolute; top: 0.09em; left: 50%; transform: translateX(-50%); width: 0.17em; height: 0.17em; border-radius: 50%; background: #FFB300; }
+  .popin { animation: pop .45s ease-out; }
+  .pulse { width: 10px; height: 10px; border-radius: 50%; background: #22B573; animation: pulse 1.4s infinite; }
 
-  /* main app (has peers) */
-  #app { flex: 1; display: none; min-height: 0; }
-  #sidebar { width: 240px; border-right: 1px solid var(--ax-border); background: var(--ax-bg-elev); display: flex; flex-direction: column; }
-  #contacts { flex: 1; overflow-y: auto; padding: 8px; }
-  .contact { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: var(--ax-radius); cursor: pointer; border: 1px solid transparent; }
-  .contact:hover { background: var(--ax-surface-2); }
-  .contact.sel { background: var(--ax-surface-2); border-color: var(--ax-border-2); }
-  .contact .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .dot.ok { background: var(--ax-accent); box-shadow: 0 0 6px var(--ax-accent-2); }
-  .dot.bad { background: var(--ax-err); }
-  #sidebar .foot { padding: 10px; border-top: 1px solid var(--ax-border); }
-  #btn-add { width: 100%; }
-  #adv-toggle { width: 100%; margin-top: 8px; }
-
-  #mainpane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  #contact-head { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--ax-border); }
-  #contact-head h2 { font-size: 15px; }
-  #tabs { display: flex; gap: 2px; padding: 0 20px; border-bottom: 1px solid var(--ax-border); }
-  #tabs button { background: none; border: none; color: var(--ax-muted); padding: 9px 14px; font: 600 12.5px var(--ax-font); border-bottom: 2px solid transparent; border-radius: 0; }
-  #tabs button.sel { color: var(--ax-text); border-bottom-color: var(--ax-accent); }
-  .tabpane { flex: 1; overflow-y: auto; padding: 18px 20px; display: none; }
-  .tabpane.sel { display: flex; flex-direction: column; }
-
-  /* Ask tab: a conversation */
-  #chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-  .chip-share { font: 11.5px var(--ax-mono); border: 1px solid var(--ax-border-2); background: var(--ax-surface-2); color: var(--ax-text-2); border-radius: 999px; padding: 3px 11px; cursor: pointer; }
-  .chip-share.sel { border-color: var(--ax-accent); color: var(--ax-accent); }
-  #thread { flex: 1; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
-  .bubble { max-width: 82%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; font-size: 13px; }
-  .bubble.me { align-self: flex-end; background: var(--ax-accent-2); color: var(--ax-text); border-bottom-right-radius: 3px; }
-  .bubble.them { align-self: flex-start; background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-bottom-left-radius: 3px; font-family: var(--ax-mono); font-size: 12px; }
-  .bubble.err { align-self: flex-start; background: none; border: 1px solid var(--ax-err); color: var(--ax-err); }
-  .bubble.in { align-self: center; max-width: 92%; background: none; border: 1px dashed var(--ax-border-2); color: var(--ax-muted); font-size: 11.5px; }
-  .bubble.in b { color: var(--ax-text-2); }
-  #askbar { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--ax-border); }
-  #askbar input { flex: 1; }
-  .empty { color: var(--ax-muted); text-align: center; margin: auto; max-width: 380px; }
-  .empty b { color: var(--ax-text-2); }
-
-  /* Sharing tab */
-  .share-item { display: flex; align-items: center; gap: 10px; background: var(--ax-surface-2); border: 1px solid var(--ax-border); border-radius: var(--ax-radius); padding: 9px 12px; margin-bottom: 6px; }
-  .share-item .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .share-item .meta { font: 11px var(--ax-mono); color: var(--ax-muted); }
-  #share-form { background: var(--ax-surface); border: 1px solid var(--ax-border); border-radius: var(--ax-radius-lg); padding: 14px; margin-top: 14px; }
-  #share-form .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  #share-form input { flex: 1; }
-
-  /* Activity + advanced */
-  .feed { font: 11.5px var(--ax-mono); display: flex; flex-direction: column; gap: 4px; }
-  .feed .denied { color: var(--ax-err); }
-  .feed .allowed { color: var(--ax-muted); }
-  .feed .ts { opacity: .55; margin-right: 6px; }
-  #advanced { display: none; position: fixed; inset: 0; background: oklch(0.10 0.01 265 / 0.7); z-index: 40; align-items: center; justify-content: center; }
-  #advanced .panel { background: var(--ax-surface); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 22px; width: min(560px, 92vw); max-height: 86vh; overflow-y: auto; }
-  #advanced h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--ax-muted); margin: 16px 0 8px; }
-  #advanced h3:first-child { margin-top: 0; }
-  #advanced .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  #advanced input { flex: 1; }
-  dialog#dlg-invite { background: var(--ax-surface); color: var(--ax-text); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 22px; width: min(480px, 92vw); }
-  dialog::backdrop { background: oklch(0.10 0.01 265 / 0.7); }
-  body.simple .adv-only { display: none !important; }
-  #ai-banner { display: none; gap: 10px; align-items: center; background: var(--ax-surface); border-bottom: 1px solid var(--ax-border); padding: 8px 20px; font-size: 12.5px; color: var(--ax-text-2); }
-  #ai-banner code { font: 11px var(--ax-mono); background: var(--ax-bg-elev); border: 1px solid var(--ax-border); border-radius: 4px; padding: 2px 8px; }
-  .pp-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
-  .pp-wrap input { flex: 1; }
-  .pp-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--ax-surface-3); border: 1px solid var(--ax-border-2); border-radius: var(--ax-radius); z-index: 30; max-height: 240px; overflow-y: auto; display: none; box-shadow: 0 8px 24px oklch(0.05 0.01 265 / .5); }
-  .pp-item { padding: 6px 10px; cursor: pointer; font: 12px var(--ax-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pp-item:hover, .pp-item.hi { background: var(--ax-accent-2); }
-  .pp-chips { display: flex; gap: 5px; flex-wrap: wrap; padding: 7px 9px; border-bottom: 1px solid var(--ax-border); }
-  .pp-chip { font: 11px var(--ax-font); background: var(--ax-bg-elev); border: 1px solid var(--ax-border-2); border-radius: 999px; padding: 2px 10px; cursor: pointer; color: var(--ax-text-2); }
-  .pp-chip:hover { border-color: var(--ax-accent); color: var(--ax-accent); }
-  #wizard { display: none; position: fixed; inset: 0; background: oklch(0.10 0.01 265 / 0.75); z-index: 45; align-items: center; justify-content: center; }
-  #wizard .panel { background: var(--ax-surface); border: 1px solid var(--ax-border-2); border-radius: 14px; padding: 24px; width: min(640px, 94vw); max-height: 88vh; overflow-y: auto; }
-  .scn-card { border: 1px solid var(--ax-border); border-radius: 10px; padding: 14px; cursor: pointer; margin-bottom: 8px; }
-  .scn-card:hover { border-color: var(--ax-accent); }
-  .scn-card b { display: block; margin-bottom: 2px; }
-  .wiz-step { background: var(--ax-bg-elev); border: 1px solid var(--ax-border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
-  .wiz-step.done { opacity: .55; border-color: var(--ax-accent-2); }
-  .wiz-step .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-  .wiz-step input, .wiz-step select { flex: 1; }
+  @keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.15); } 100% { transform: scale(1); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes dotDrop { 0% { transform: translate(-50%, -0.6em); opacity: 0; } 60% { transform: translate(-50%, 0.05em); opacity: 1; } 80% { transform: translate(-50%, -0.03em); } 100% { transform: translate(-50%, 0); opacity: 1; } }
+  @keyframes dotDrop2 { 0% { transform: translate(-50%, -0.6em); opacity: 0; } 60% { transform: translate(-50%, 0.05em); opacity: 1; } 80% { transform: translate(-50%, -0.03em); } 100% { transform: translate(-50%, 0); opacity: 1; } }
 </style>
 </head>
 <body>
-<header>
-  <h1><span>agentina</span></h1>
-  <span class="hint">You are</span><span id="me">…</span>
-  <span style="flex:1"></span>
-  <span class="hint mono adv-only" id="me-id"></span>
-  <button class="ghost" id="mode-toggle" style="font-size:11px;padding:4px 10px">Advanced</button>
-</header>
-
-<div id="onboarding">
-  <div class="panel">
-    <h2>Collaborate with someone</h2>
-    <p>Connect this machine with another person's — your agents will work together under rules you each control.</p>
-    <button id="ob-invite" style="width:100%">Create an invite link</button>
-    <div id="ob-invite-out"></div>
-    <div id="ob-wait">Waiting for them to join…</div>
-    <div class="or">or</div>
-    <div style="display:flex;gap:8px">
-      <input id="ob-join" placeholder="Paste an invite you received (agentina://join/…)">
-      <button class="ghost" id="ob-join-btn">Join</button>
-    </div>
-    <p class="hint" style="margin-top:18px;margin-bottom:0">Invites are one-time links, safe to send over any chat. Connecting shares nothing by itself.</p>
-  </div>
-</div>
-
-<div id="ai-banner">
-  <span>🤖 AI assistants aren't available on this machine yet — everything else works. Install once:</span>
-  <code id="ai-cmd"></code>
-  <button class="ghost" id="ai-copy" style="font-size:11px;padding:3px 9px">Copy</button>
-  <button class="ghost" id="ai-recheck" style="font-size:11px;padding:3px 9px">I installed it — check again</button>
-</div>
-<div id="app">
-  <div id="sidebar">
-    <div id="contacts"></div>
-    <div class="foot">
-      <button id="btn-add" class="ghost">+ Invite someone</button>
-      <button id="agents-toggle" class="ghost" style="margin-top:8px;width:100%">My agents</button>
-      <button id="adv-toggle" class="ghost">Advanced</button>
-    </div>
-  </div>
-  <div id="mainpane">
-    <div id="contact-head">
-      <span class="dot ok" id="c-dot"></span>
-      <h2 id="c-name">…</h2>
-      <button class="link" id="c-test">test connection</button>
-      <button class="link" id="c-wizard">set up a collaboration</button>
-      <span style="flex:1"></span>
-      <span class="hint mono" id="c-id"></span>
-    </div>
-    <div id="tabs">
-      <button data-tab="ask" class="sel">Ask them</button>
-      <button data-tab="share">What I share</button>
-      <button data-tab="activity">Activity</button>
-    </div>
-    <div class="tabpane sel" id="pane-ask">
-      <div id="chips"></div>
-      <div id="thread"></div>
-      <div id="ask-empty" class="empty" style="display:none"></div>
-      <div id="askbar">
-        <input id="ask-input" placeholder="…">
-        <button id="ask-send">Ask</button>
-      </div>
-    </div>
-    <div class="tabpane" id="pane-share">
-      <div id="share-list"></div>
-      <div id="share-form">
-        <div class="hint" style="margin-bottom:10px"><b style="color:var(--ax-text-2)">Share something new.</b> Their agents can then use it — exactly this, nothing else, and you can stop it anytime.</div>
-        <div class="row">
-          <select id="sh-kind" style="max-width:150px">
-            <option value="agent">one of my agents</option>
-            <option value="folder">a folder</option>
-            <option value="server">a server</option>
-            <option value="repo">a repository</option>
-          </select>
-          <select id="sh-agent" style="display:none"></select>
-          <input id="sh-value" placeholder="/path/to/folder">
-          <input id="sh-path" placeholder="restrict to path (optional)" style="display:none">
-        </div>
-        <div class="row">
-          <select id="sh-mode" style="max-width:130px">
-            <option value="ro">read-only</option>
-            <option value="rw">read &amp; write</option>
-          </select>
-          <select id="sh-for" style="max-width:150px">
-            <option value="">until I stop it</option>
-            <option value="3600">for 1 hour</option>
-            <option value="86400">for 1 day</option>
-            <option value="604800">for 1 week</option>
-          </select>
-          <button id="sh-go">Share</button>
-        </div>
-      </div>
-    </div>
-    <div class="tabpane" id="pane-activity">
-      <div class="feed" id="feed"></div>
-    </div>
-  </div>
-</div>
-
-<div id="advanced">
-  <div class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-      <b>Advanced</b>
-      <button class="ghost" id="adv-close">Close</button>
-    </div>
-    <h3>Node</h3>
-    <div class="hint mono" id="adv-node"></div>
-    <h3>Channels — talk to agents from Telegram / GitLab</h3>
-    <div class="hint" id="adv-ch-active" style="margin-bottom:8px"></div>
-    <div class="row"><input id="ch-tg-env" placeholder="Telegram token env var (e.g. TG_BOT_TOKEN)"><button class="ghost" id="btn-ch-tg">Save</button></div>
-    <div class="row"><input id="ch-gl-host" placeholder="GitLab host url"><input id="ch-gl-env" placeholder="token env var" style="max-width:130px"><button class="ghost" id="btn-ch-gl">Save</button></div>
-    <div class="hint">Secrets are read from environment variables, never stored in files. Restart the node after saving.</div>
-
-  </div>
-</div>
-
-<div id="wizard">
-  <div class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <b id="wiz-title">What are you two doing together?</b>
-      <button class="ghost" id="wiz-close">Close</button>
-    </div>
-    <div id="wiz-body"></div>
-  </div>
-</div>
-
-<div id="myagents" style="display:none;position:fixed;inset:0;background:oklch(0.10 0.01 265 / 0.7);z-index:40;align-items:center;justify-content:center">
-  <div class="panel" style="background:var(--ax-surface);border:1px solid var(--ax-border-2);border-radius:14px;padding:22px;width:min(600px,92vw);max-height:86vh;overflow-y:auto">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <b>My agents</b>
-      <button class="ghost" id="agents-close">Close</button>
-    </div>
-    <div class="hint" style="margin-bottom:10px">Your AI workers. Each has a provider, a workspace it lives in, a personality, and skills (markdown files in <span class="mono">&lt;workspace&gt;/skills/</span> — edit them anytime, the next answer uses them). Share an agent with a contact from the "What I share" tab.</div>
-    <div id="agents-list" style="margin-bottom:16px"></div>
-    <div style="background:var(--ax-bg-elev);border:1px solid var(--ax-border);border-radius:10px;padding:14px">
-      <b style="font-size:12.5px">New agent</b>
-      <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
-        <input id="ag-id" placeholder="name (e.g. coder)" style="max-width:140px;flex:1">
-        <select id="ag-provider" class="adv-only" style="max-width:150px">
-          <option value="claude-code">Claude (CLI)</option>
-          <option value="scoped-fs">files only (no AI)</option>
-        </select>
-        <input id="ag-model" class="adv-only" placeholder="model (optional)" style="max-width:140px;flex:1">
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="ag-workspace" placeholder="which folder does it work in?" style="flex:1">
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <input id="ag-prompt" placeholder="what should it help with? e.g. answer questions about the Acme project" style="flex:1">
-      </div>
-      <button id="ag-create">Create agent</button>
-    </div>
-  </div>
-</div>
-
-<dialog id="dlg-invite">
-  <h2 style="font-size:16px;margin-bottom:6px">Invite someone</h2>
-  <p class="hint" style="margin-bottom:14px">Send them this one-time link over any chat. It expires in 15 minutes and is worthless after they join.</p>
-  <div id="dlg-invite-link" style="font:11px var(--ax-mono);background:var(--ax-bg-elev);border:1px dashed var(--ax-accent-2);border-radius:6px;padding:10px;word-break:break-all;margin-bottom:14px"></div>
-  <div style="display:flex;gap:8px;justify-content:flex-end">
-    <button class="ghost" onclick="this.closest('dialog').close()">Done</button>
-  </div>
-</dialog>
-
+<div class="wrap"><div class="col" id="col"></div></div>
 <div id="toast"></div>
 <script>
 (function () {
   "use strict";
   var API = "/agentina/v1";
-  var state = { status: null, selected: null, peerInfo: {}, shares: {}, threads: {}, chip: {} };
+  var BLUE = "#2979FF", BLUE_D = "#1B5FD9", GREEN = "#22B573", GREEN_D = "#178F58",
+      RED = "#F23A3A", YELLOW = "#FFB300", AMBER = "#9A6700",
+      BLUE_BG = "#E7F0FF", GREEN_BG = "#E4F8EE", AMBER_BG = "#FFF6DE", RED_BG = "#FEECEC";
+  var AVATARS = [BLUE, GREEN, RED, YELLOW];
 
+  var S = {
+    screen: null, stack: [],
+    status: null, lastHash: "",
+    contact: null, peerInfo: {}, shares: {}, threads: {},
+    chip: {}, conv: {},
+    inviteLink: null, inviteBaseline: 0,
+    share: {}, agentNew: {}, edit: null, form: {},
+    channelId: null, hopFlip: false, quickPicks: [],
+    toastT: null, sugT: null
+  };
+
+  // ---------- tiny helpers ----------
   function $(id) { return document.getElementById(id); }
-  function esc(s) { var d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; }
-  function toast(msg) {
-    var t = $("toast"); t.textContent = msg; t.classList.add("show");
-    setTimeout(function () { t.classList.remove("show"); }, 2800);
+  function esc(s) { var d = document.createElement("div"); d.textContent = String(s == null ? "" : s); return d.innerHTML; }
+  function E(tag, cls, html) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (html != null) d.innerHTML = html;
+    return d;
   }
+  function B(cls, html, onclick) { var b = E("button", cls, html); b.onclick = onclick; return b; }
+  function css(node, styles) { for (var k in styles) node.style[k] = styles[k]; return node; }
   function api(method, path, body) {
     return fetch(API + path, {
       method: method,
       headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (data) {
+      return r.json()["catch"](function () { return {}; }).then(function (data) {
         if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
         return data;
       });
     });
+  }
+  function toast(msg) {
+    clearTimeout(S.toastT);
+    var t = $("toast"); t.textContent = msg; t.classList.add("show");
+    S.toastT = setTimeout(function () { t.classList.remove("show"); }, 2800);
+  }
+  function copyText(text, msg) {
+    var done = function () { toast(msg || "Copied"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { toast("Copy failed — select it by hand"); });
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { toast("Copy failed — select it by hand"); }
+      document.body.removeChild(ta);
+    }
   }
   function countdown(iso) {
     var left = Math.round((Date.parse(iso) - Date.now()) / 1000);
@@ -356,615 +191,1701 @@ export const CONSOLE_HTML = `<!doctype html>
     if (left < 129600) return Math.round(left / 3600) + "h left";
     return Math.round(left / 86400) + "d left";
   }
-  var USAGE = {
-    "scoped-fs": 'Try "list", or "read brief.txt"',
-    "scoped-git": 'Try "branches", or "log 10"',
-    "ssh-exec": "Type a command to run on their server",
-    "claude-code": "Describe what you need, in plain language",
-  };
-
-  // ---------- top-level render ----------
-  function render(s) {
-    state.status = s;
-    $("me").textContent = s.party.name;
-    $("me-id").textContent = s.party.id;
-    var peers = s.peers || [];
-    $("onboarding").style.display = peers.length ? "none" : "flex";
-    $("app").style.display = peers.length ? "flex" : "none";
-    if (!peers.length) return;
-    if (!state.selected || !peers.some(function (p) { return p.peer === state.selected; })) {
-      state.selected = peers[0].peer;
-      loadPeer(state.selected);
-    }
-    renderContacts(peers);
-    renderContactHead(peers);
-    renderAsk();
-    renderShares();
-    renderFeed();
-    applyEnvironment(s.environment);
-    if (!state.modeApplied) { state.modeApplied = true; applyMode((s.ui && s.ui.mode) || "simple"); }
-    $("adv-node").textContent = s.url + " · " + s.protocol + " · agents: " +
-      (s.agents || []).filter(function (a) { return a.id !== "echo"; }).map(function (a) { return a.id; }).join(", ");
-    $("adv-ch-active").textContent = (s.channels && s.channels.length) ? "Active: " + s.channels.join(", ") : "None running.";
+  function fmtTime(iso) {
+    var d = new Date(iso), now = new Date();
+    var hm = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+    var day = function (x) { return x.getFullYear() + "-" + x.getMonth() + "-" + x.getDate(); };
+    if (day(d) === day(now)) return "Today, " + hm;
+    var y = new Date(now.getTime() - 86400000);
+    if (day(d) === day(y)) return "Yesterday, " + hm;
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return d.getDate() + " " + months[d.getMonth()] + ", " + hm;
+  }
+  function initialOf(name) { return (String(name || "?").trim().charAt(0) || "?").toUpperCase(); }
+  function baseName(p) {
+    var parts = String(p || "").split("/").filter(function (x) { return x; });
+    return parts.length ? parts[parts.length - 1] : String(p || "");
   }
 
-  function renderContacts(peers) {
-    var el = $("contacts");
-    el.innerHTML = "";
-    peers.forEach(function (p) {
-      var div = document.createElement("div");
-      div.className = "contact" + (p.peer === state.selected ? " sel" : "");
-      div.innerHTML = '<span class="dot ' + (p.healthy ? "ok" : "bad") + '"></span><span>' + esc(p.peer) + "</span>";
-      div.onclick = function () {
-        state.selected = p.peer;
-        loadPeer(p.peer);
-        render(state.status);
-      };
-      el.appendChild(div);
+  // ---------- brand ----------
+  function logoDots(size, gap) {
+    return "<div style='display:flex;gap:" + gap + "px;align-items:center'>" +
+      "<svg width='" + size + "' height='" + size + "' viewBox='0 0 17 17'><rect x='0.5' y='0.5' width='16' height='16' rx='3' fill='#2979FF'></rect></svg>" +
+      "<svg width='" + size + "' height='" + size + "' viewBox='0 0 17 17'><path d='M8.5 0.8 L16.4 15.6 Q16.6 16.2 16 16.2 L1 16.2 Q0.4 16.2 0.6 15.6 Z' fill='#F23A3A'></path></svg>" +
+      "<svg width='" + size + "' height='" + size + "' viewBox='0 0 17 17'><rect x='2.2' y='2.2' width='12.6' height='12.6' rx='2' fill='#FFB300' transform='rotate(45 8.5 8.5)'></rect></svg>" +
+      "<svg width='" + size + "' height='" + size + "' viewBox='0 0 17 17'><circle cx='8.5' cy='8.5' r='8' fill='#22B573'></circle></svg>" +
+      "</div>";
+  }
+  function wordmark(px) {
+    var anim = (S.hopFlip ? "dotDrop2" : "dotDrop") + " .45s .15s cubic-bezier(.3,.7,.4,1.2) 1 both";
+    var w = E("div", "wordmark",
+      "<span style='color:#2979FF'>agent</span>" +
+      "<span class='dotwrap'>ı<span class='hopdot' style='animation:" + anim + "'></span></span>" +
+      "<span style='color:#FFB300'>n</span><span style='color:#22B573'>a</span>");
+    w.style.fontSize = px + "px";
+    w.onclick = function () { S.hopFlip = !S.hopFlip; render(); };
+    return w;
+  }
+  function homeIcon() {
+    return "<svg width='20' height='20' viewBox='0 0 24 24' fill='none'><rect x='6' y='8' width='12' height='12' rx='1.6' stroke='#2979FF' stroke-width='1.6' stroke-linejoin='round'></rect><path d='M8 8 C8 3, 16 3, 16 8' stroke='#2979FF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'></path><path d='M9.5 20 V15 C9.5 12, 14.5 12, 14.5 15 V20' stroke='#2979FF' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'></path></svg>";
+  }
+  function checkCircle() {
+    var d = E("div", "popin");
+    css(d, { width: "110px", height: "110px", borderRadius: "50%", background: GREEN, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 0 " + GREEN_D });
+    d.innerHTML = "<svg width='52' height='52' viewBox='0 0 24 24' fill='none'><path d='M4 12.5l5 5L20 6.5' stroke='#ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'></path></svg>";
+    return d;
+  }
+
+  // ---------- state accessors ----------
+  function peers() { return (S.status && S.status.peers) || []; }
+  function env() { return (S.status && S.status.environment) || null; }
+  function cur() {
+    if (S.screen) return S.screen;
+    return peers().length ? "home" : "onboarding";
+  }
+  function contactOf(name) {
+    var idx = 0;
+    var list = peers();
+    for (var i = 0; i < list.length; i++) if (list[i].peer === name) idx = i;
+    var p = list.filter(function (x) { return x.peer === name; })[0];
+    return {
+      name: name,
+      healthy: Boolean(p && p.healthy),
+      color: AVATARS[idx % AVATARS.length],
+      initial: initialOf(name)
+    };
+  }
+  function myAgents() {
+    return ((S.status && S.status.agents) || []).filter(function (a) {
+      return a.id !== "echo" && !a.session &&
+        a.id.indexOf("folder-") !== 0 && a.id.indexOf("server-") !== 0 && a.id.indexOf("repo-") !== 0;
     });
   }
-
-  function renderContactHead(peers) {
-    var p = peers.find(function (x) { return x.peer === state.selected; });
-    if (!p) return;
-    $("c-name").textContent = p.peer;
-    $("c-dot").className = "dot " + (p.healthy ? "ok" : "bad");
-    var info = state.peerInfo[p.peer];
-    $("c-id").textContent = info && info.grantedToMe && info.grantedToMe.length ? "" : "";
+  function agentShared(id) {
+    return ((S.status && S.status.grants) || []).some(function (g) {
+      return g.status === "active" && (g.agentIds || []).indexOf(id) >= 0;
+    });
   }
-
-  // ---------- per-peer data ----------
-  function loadPeer(name) {
-    api("GET", "/peer-grants?peer=" + encodeURIComponent(name)).then(function (info) {
-      state.peerInfo[name] = info;
-      if (state.selected === name) { renderAsk(); }
-    }).catch(function () { /* offline */ });
-    api("GET", "/shares?peer=" + encodeURIComponent(name)).then(function (r) {
-      state.shares[name] = r.shares || [];
-      if (state.selected === name) { renderShares(); }
-    }).catch(function () { /* */ });
-    api("GET", "/chat?peer=" + encodeURIComponent(name)).then(function (r) {
-      state.threads[name] = r.entries || [];
-      if (state.selected === name) { renderThread(); }
-    }).catch(function () { /* */ });
-  }
-
-  // ---------- Ask tab: a conversation with their agents ----------
   function grantedAgents(name) {
-    var info = state.peerInfo[name];
+    var info = S.peerInfo[name];
     if (!info) return [];
     var granted = {};
     (info.grantedToMe || []).forEach(function (g) {
       (g.agentIds || []).forEach(function (id) { granted[id] = g; });
     });
-    return (info.agents || []).filter(function (a) { return granted[a.id] && a.id !== "echo"; })
+    return (info.agents || [])
+      .filter(function (a) { return granted[a.id] && a.id !== "echo"; })
       .map(function (a) { return { id: a.id, tags: a.tags || [], grant: granted[a.id] }; });
   }
-  function chipLabel(a) {
-    var g = a.grant;
-    var sc = (g.scopes || [])[0];
-    if (sc && sc.kind === "fs") return "📁 " + (sc.root.split("/").pop() || sc.root);
-    if (sc && sc.kind === "ssh") return "🖥 " + sc.host;
-    if (sc && sc.kind === "repo") return "🌿 " + (sc.url.split("/").pop() || sc.url);
-    return "🤖 " + a.id;
+  function partyNames() {
+    var map = {};
+    peers().forEach(function (p) { if (p.partyId) map[p.partyId] = p.peer; });
+    return map;
   }
-  function renderAsk() {
-    var name = state.selected;
-    var agents = grantedAgents(name);
-    var chipsEl = $("chips");
-    chipsEl.innerHTML = "";
-    var emptyEl = $("ask-empty");
-    var bar = $("askbar");
-    if (!agents.length) {
-      emptyEl.style.display = "block";
-      emptyEl.innerHTML = "<b>" + esc(name) + "</b> hasn't shared anything with you yet.<br><br>Sharing happens on <i>their</i> side. Want a guided start for both of you?<br><br>";
-      var wizBtn = document.createElement("button");
-      wizBtn.className = "link";
-      wizBtn.textContent = "Pick what you're doing together →";
-      wizBtn.onclick = function () { openWizard(); };
-      emptyEl.appendChild(wizBtn);
-      bar.style.display = "none";
-      $("thread").style.display = "none";
-      return;
+  function channelRunning(id) {
+    return ((S.status && S.status.channels) || []).indexOf(id) >= 0;
+  }
+  function channelConfigured(id) {
+    var cfg = (S.status && S.status.channelsConfig) || {};
+    return Boolean(cfg[id]);
+  }
+  function claudeFound() {
+    var e = env();
+    return Boolean(e && e.ai && e.ai.claude && e.ai.claude.found);
+  }
+  function runtimeProbe(key) {
+    var e = env();
+    var r = e && e.ai && e.ai.runtimes && e.ai.runtimes[key];
+    return r || { found: key === "claude" ? claudeFound() : false };
+  }
+  // Can another MACHINE reach this node? Two things must hold: the
+  // listener isn't loopback-only, and the advertised URL (embedded in
+  // every invite) isn't a loopback address.
+  function connectivity() {
+    var s = S.status || {};
+    var url = String(s.url || "");
+    var bind = String(s.bind || "127.0.0.1");
+    var boundWide = bind !== "127.0.0.1" && bind !== "localhost" && bind !== "::1";
+    var urlPublic = url.indexOf("127.0.0.1") < 0 && url.indexOf("localhost") < 0;
+    var e = env();
+    var ip = e && e.network && e.network.tailscale && e.network.tailscale.ip;
+    return {
+      reachable: boundWide && urlPublic,
+      ip: ip || null,
+      cmd: "agentina start --bind " + (ip || "<your-network-ip>")
+    };
+  }
+  function connectivityCard() {
+    var conn = connectivity();
+    var box = E("div");
+    css(box, { background: AMBER_BG, border: "2px solid #FFE08A", borderRadius: "16px", padding: "16px 18px", marginBottom: "20px" });
+    box.appendChild(css(E("div", null, "Inviting someone on another machine? One step first."), { fontSize: "15px", fontWeight: "700", lineHeight: "1.45", marginBottom: "6px" }));
+    box.appendChild(css(E("div", null,
+      "Right now this machine only answers to itself, so the link below works for same-machine demos only. To be reachable, restart agentina with your network address" + (conn.ip ? " — Tailscale is already here" : "") + ":"
+    ), { fontSize: "14px", color: "#5f6368", lineHeight: "1.5", marginBottom: "10px" }));
+    var row = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" });
+    var code = E("code", "mono", esc(conn.cmd));
+    css(code, { fontSize: "12.5px", background: "#ffffff", border: "1px solid #F5DE9B", borderRadius: "8px", padding: "6px 10px" });
+    row.appendChild(code);
+    var cp = B("", "Copy", function () { copyText(conn.cmd, "Copied — run it where agentina lives"); });
+    css(cp, { border: "none", background: "none", color: AMBER, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
+    row.appendChild(cp);
+    box.appendChild(row);
+    var links = css(E("div"), { display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "6px" });
+    var mk = function (label, fn) {
+      var b = B("", label, fn);
+      css(b, { border: "none", background: "none", color: AMBER, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
+      return b;
+    };
+    links.appendChild(mk("New to this? The plain-language guide →", function () { go("networkHelp"); }));
+    links.appendChild(mk("Network settings →", openAccount));
+    box.appendChild(links);
+    return box;
+  }
+
+  // ---------- navigation ----------
+  function go(screen, extra) {
+    S.stack.push(cur());
+    S.screen = screen;
+    if (extra) for (var k in extra) S[k] = extra[k];
+    render();
+  }
+  function goHome() { S.screen = peers().length ? "home" : "onboarding"; S.stack = []; render(); }
+  function back() {
+    if (cur() === "share" && S.share.step && S.share.step !== "done") {
+      var order = ["kind", "what", "access", "duration", "confirm"];
+      var i = order.indexOf(S.share.step);
+      if (i > 0) { S.share.step = order[i - 1]; render(); return; }
     }
-    emptyEl.style.display = "none";
-    bar.style.display = "flex";
-    $("thread").style.display = "flex";
-    if (!state.chip[name] || !agents.some(function (a) { return a.id === state.chip[name]; })) {
-      state.chip[name] = agents[0].id;
+    if (cur() === "agentNew" && S.agentNew.step && S.agentNew.step !== "done") {
+      var order2 = ["name", "folder", "purpose"];
+      var j = order2.indexOf(S.agentNew.step);
+      if (j > 0) { S.agentNew.step = order2[j - 1]; render(); return; }
     }
-    agents.forEach(function (a) {
-      var c = document.createElement("button");
-      c.className = "chip-share" + (state.chip[name] === a.id ? " sel" : "");
-      c.textContent = chipLabel(a);
-      if (a.grant.expiresAt) c.textContent += " · " + countdown(a.grant.expiresAt);
-      c.onclick = function () { state.chip[name] = a.id; renderAsk(); };
-      chipsEl.appendChild(c);
+    var prev = S.stack.pop();
+    S.screen = prev || (peers().length ? "home" : "onboarding");
+    render();
+  }
+  function hdr(children) {
+    var d = E("div", "hdr");
+    d.appendChild(B("btn-back", "←", back));
+    (children || []).forEach(function (c) { d.appendChild(c); });
+    return d;
+  }
+
+  // ---------- data loads ----------
+  function loadPeer(name, thenRender) {
+    api("GET", "/peer-grants?peer=" + encodeURIComponent(name)).then(function (info) {
+      var changed = JSON.stringify(S.peerInfo[name]) !== JSON.stringify(info);
+      S.peerInfo[name] = info;
+      if (changed && thenRender) maybeRender();
+    })["catch"](function () { /* peer offline */ });
+    api("GET", "/shares?peer=" + encodeURIComponent(name)).then(function (r) {
+      var next = r.shares || [];
+      var changed = JSON.stringify(S.shares[name]) !== JSON.stringify(next);
+      S.shares[name] = next;
+      if (changed && thenRender) maybeRender();
+    })["catch"](function () { /* */ });
+    api("GET", "/chat?peer=" + encodeURIComponent(name)).then(function (r) {
+      var next = r.entries || [];
+      var changed = JSON.stringify(S.threads[name]) !== JSON.stringify(next);
+      S.threads[name] = next;
+      if (changed && thenRender) {
+        // The ask thread must update live even while the user is typing —
+        // re-render but keep the input's value and focus.
+        if (cur() === "ask" && name === S.contact) { renderKeepAskFocus(); scrollThread(); }
+        else { maybeRender(); }
+      }
+    })["catch"](function () { /* */ });
+  }
+  function loadQuickPicks(cb) {
+    api("GET", "/fs/suggest?path=").then(function (r) {
+      S.quickPicks = r.quickPicks || [];
+      if (cb) cb();
+    })["catch"](function () { if (cb) cb(); });
+  }
+
+  // ---------- rendering ----------
+  function render() {
+    var col = $("col");
+    col.innerHTML = "";
+    var scr = cur();
+    if (scr !== "onboarding" && scr !== "home") col.appendChild(brandBar());
+    var fn = SCREENS[scr] || SCREENS.home;
+    col.appendChild(fn());
+  }
+  function maybeRender() {
+    var a = document.activeElement;
+    if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA")) return;
+    render();
+  }
+  function scrollThread() {
+    if (cur() !== "ask") return;
+    requestAnimationFrame(function () { window.scrollTo(0, document.body.scrollHeight); });
+  }
+  function renderKeepAskFocus() {
+    var hadFocus = document.activeElement && document.activeElement.id === "ask-input";
+    render();
+    var inp = $("ask-input");
+    if (inp) {
+      inp.value = S.form.ask || "";
+      if (hadFocus) inp.focus();
+    }
+  }
+  function brandBar() {
+    var bar = E("div");
+    css(bar, { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 0 6px" });
+    var left = B("", "", goHome);
+    css(left, { display: "flex", alignItems: "center", gap: "8px", background: "none", border: "none", cursor: "pointer", padding: "0" });
+    left.innerHTML = logoDots(10, 5);
+    var wm = wordmark(17);
+    wm.onclick = goHome;
+    left.appendChild(wm);
+    bar.appendChild(left);
+    var homeBtn = B("", homeIcon(), goHome);
+    homeBtn.title = "Home";
+    css(homeBtn, { width: "40px", height: "40px", border: "2px solid #e8eaed", borderRadius: "50%", background: "#ffffff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" });
+    bar.appendChild(homeBtn);
+    return bar;
+  }
+  function screenRoot(name) {
+    var d = E("div");
+    d.setAttribute("data-screen", name);
+    return d;
+  }
+
+  var SCREENS = {};
+
+  // ============ ONBOARDING ============
+  SCREENS.onboarding = function () {
+    var d = screenRoot("onboarding");
+    css(d, { display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", paddingTop: "96px" });
+    d.appendChild(E("div", null, logoDots(17, 9)));
+    var wm = wordmark(42);
+    css(wm, { margin: "28px 0 12px" });
+    d.appendChild(wm);
+    var tag = E("div", null, "Work together, safely. Connect with one other person — share exactly what's needed, nothing more.");
+    css(tag, { fontSize: "19px", color: "#5f6368", lineHeight: "1.5", maxWidth: "380px", marginBottom: "44px" });
+    d.appendChild(tag);
+    d.appendChild(B("btn btn-blue", "Invite someone", startInvite));
+    var joinB = B("btn btn-white", "I have an invite link", function () { go("join"); });
+    css(joinB, { marginTop: "14px" });
+    d.appendChild(joinB);
+    var foot = E("div", null, "No accounts. No cloud in the middle. Connecting shares nothing by itself.");
+    css(foot, { fontSize: "14px", color: "#9aa0a6", marginTop: "32px", maxWidth: "340px", lineHeight: "1.5" });
+    d.appendChild(foot);
+    if (S.status && !connectivity().reachable) {
+      var connLink = B("linkbtn", "Connecting across two machines? How to get reachable →", function () { go("networkHelp"); });
+      css(connLink, { marginTop: "10px" });
+      d.appendChild(connLink);
+    }
+    return d;
+  };
+
+  function startInvite() {
+    S.inviteLink = null;
+    S.inviteBaseline = peers().length;
+    go("invite");
+    api("POST", "/invites").then(function (r) {
+      S.inviteLink = r.link;
+      if (cur() === "invite") render();
+    })["catch"](function (e) { toast("Could not create an invite — " + e.message); });
+  }
+
+  // ============ INVITE ============
+  SCREENS.invite = function () {
+    var d = screenRoot("invite");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Send them this link"));
+    d.appendChild(E("div", "sub", "Over any chat. It works once and expires in 15 minutes — worthless after they join."));
+    if (S.status && !connectivity().reachable) d.appendChild(connectivityCard());
+    var box = E("div", "mono", S.inviteLink ? esc(S.inviteLink) : "creating your invite…");
+    css(box, { background: "#ffffff", border: "2px dashed #A9CBFF", borderRadius: "16px", padding: "18px 20px", fontSize: "13px", color: BLUE, wordBreak: "break-all", lineHeight: "1.6" });
+    d.appendChild(box);
+    var cp = B("btn btn-blue", "Copy link", function () {
+      if (!S.inviteLink) { toast("Still creating the link…"); return; }
+      copyText(S.inviteLink, "Copied — send it over any chat");
     });
-    var chosen = agents.find(function (a) { return a.id === state.chip[name]; });
-    var hint = "";
-    (chosen.tags || []).forEach(function (t) { if (USAGE[t]) hint = USAGE[t]; });
-    $("ask-input").placeholder = hint || "your message";
-    renderThread();
+    css(cp, { marginTop: "20px" });
+    d.appendChild(cp);
+    var wait = E("div", null, "<div class='pulse'></div>Waiting for them to join…");
+    css(wait, { display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginTop: "36px", color: "#5f6368", fontSize: "16px", fontWeight: "500" });
+    d.appendChild(wait);
+    return d;
+  };
+
+  // ============ JOIN ============
+  SCREENS.join = function () {
+    var d = screenRoot("join");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Paste the invite"));
+    d.appendChild(E("div", "sub", "The link they sent you — it starts with <span class='mono' style='font-size:14px;color:#202124'>agentina://join/</span>"));
+    var input = E("input", "input");
+    input.placeholder = "agentina://join/…";
+    input.value = S.form.join || "";
+    input.oninput = function () { S.form.join = input.value; };
+    d.appendChild(input);
+    var joinBtn = B("btn btn-green", "Join", function () {
+      var link = (S.form.join || "").trim();
+      if (!link) { toast("Paste the invite link first"); return; }
+      joinBtn.disabled = true;
+      api("POST", "/join", { link: link }).then(function (r) {
+        S.form.join = "";
+        toast("Connected with " + r.party.name);
+        refresh().then(goHome);
+      })["catch"](function (e) { joinBtn.disabled = false; toast("That didn't work — " + e.message); });
+    });
+    css(joinBtn, { marginTop: "20px" });
+    input.onkeydown = function (e) { if (e.key === "Enter") joinBtn.click(); };
+    d.appendChild(joinBtn);
+    return d;
+  };
+
+  // ============ HOME ============
+  SCREENS.home = function () {
+    var d = screenRoot("home");
+
+    var head = E("div");
+    css(head, { display: "flex", alignItems: "center", gap: "8px", height: "76px" });
+    head.appendChild(E("div", null, logoDots(10, 5)));
+    head.appendChild(wordmark(21));
+    head.appendChild(css(E("div"), { flex: "1" }));
+    var me = (S.status && S.status.party) || { name: "…" };
+    var profile = (S.status && S.status.profile) || {};
+    var acct = B("", "", function () { openAccount(); });
+    css(acct, { display: "flex", alignItems: "center", gap: "8px", background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "999px", padding: "5px 14px 5px 6px", cursor: "pointer" });
+    var av = E("div", "avatar", esc(initialOf(me.name)));
+    css(av, { width: "28px", height: "28px", background: profile.color || BLUE, fontSize: "14px" });
+    acct.appendChild(av);
+    acct.appendChild(css(E("div", null, esc(me.name)), { fontSize: "14.5px", fontWeight: "600", color: "#5f6368" }));
+    head.appendChild(acct);
+    d.appendChild(head);
+
+    if (env() && !claudeFound()) d.appendChild(aiBanner());
+
+    d.appendChild(css(E("div", null, "Your people"), { fontSize: "30px", fontWeight: "800", letterSpacing: "-0.5px", margin: "28px 0 6px" }));
+    d.appendChild(css(E("div", null, "Everyone this machine works with."), { fontSize: "16px", color: "#5f6368", marginBottom: "20px" }));
+
+    var list = E("div", "stack");
+    peers().forEach(function (p, i) {
+      var card = B("card", "", function () { openContact(p.peer); });
+      var av2 = E("div", "avatar", esc(initialOf(p.peer)));
+      css(av2, { width: "52px", height: "52px", background: AVATARS[i % AVATARS.length], fontSize: "22px" });
+      card.appendChild(av2);
+      var mid = css(E("div"), { flex: "1", minWidth: "0" });
+      mid.appendChild(css(E("div", null, esc(p.peer)), { fontSize: "18px", fontWeight: "700" }));
+      var info = S.peerInfo[p.peer];
+      var n = info ? grantedAgents(p.peer).length : -1;
+      var statusText = !p.healthy ? "Offline"
+        : n > 0 ? ("Sharing " + n + " thing" + (n > 1 ? "s" : "") + " with you")
+        : n === 0 ? "Online · nothing shared yet" : "Online";
+      var st = E("div", null, "<div style='width:8px;height:8px;border-radius:50%;background:" + (p.healthy ? GREEN : "#dadce0") + "'></div>" + esc(statusText));
+      css(st, { display: "flex", alignItems: "center", gap: "6px", fontSize: "14.5px", color: "#5f6368", marginTop: "2px" });
+      mid.appendChild(st);
+      card.appendChild(mid);
+      card.appendChild(E("div", "chev", "›"));
+      list.appendChild(card);
+    });
+    d.appendChild(list);
+
+    var inv = B("btn btn-blue", "+ Invite someone", startInvite);
+    css(inv, { marginTop: "20px" });
+    d.appendChild(inv);
+
+    var row = css(E("div"), { display: "flex", gap: "12px", marginTop: "14px" });
+    var agentsB = B("btn btn-plain", "My agents", function () { go("agents"); });
+    css(agentsB, { flex: "1" });
+    var actB = B("btn btn-plain", "Activity", function () { go("activity"); });
+    css(actB, { flex: "1" });
+    row.appendChild(agentsB); row.appendChild(actB);
+    d.appendChild(row);
+
+    var adv = B("mutedbtn", "Advanced settings", function () { go("advanced"); });
+    css(adv, { alignSelf: "center", marginTop: "36px" });
+    d.appendChild(adv);
+    return d;
+  };
+
+  function aiBanner() {
+    var e = env();
+    var box = E("div");
+    css(box, { background: AMBER_BG, border: "2px solid #FFE08A", borderRadius: "16px", padding: "16px 18px", marginTop: "8px" });
+    box.appendChild(css(E("div", null, "AI assistants aren't set up on this machine yet — everything else works."), { fontSize: "15px", fontWeight: "600", lineHeight: "1.45", marginBottom: "10px" }));
+    var row = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" });
+    var cmd = e.ai.installCommand;
+    var code = E("code", "mono", esc(cmd));
+    css(code, { fontSize: "12.5px", background: "#ffffff", border: "1px solid #F5DE9B", borderRadius: "8px", padding: "6px 10px" });
+    row.appendChild(code);
+    var mk = function (label, fn) {
+      var b = B("", label, fn);
+      css(b, { border: "none", background: "none", color: AMBER, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
+      return b;
+    };
+    row.appendChild(mk("Copy", function () { copyText(cmd, "Copied — paste it in a terminal"); }));
+    row.appendChild(mk("I installed it", recheckEnv));
+    box.appendChild(row);
+    var more = mk("Prefer Gemini or Codex? See all runtimes →", function () { go("runtimes"); });
+    css(more, { padding: "6px 6px 0 6px", marginTop: "4px" });
+    box.appendChild(more);
+    return box;
   }
-  function renderThread() {
-    var el = $("thread");
-    el.innerHTML = "";
-    var entries = state.threads[state.selected] || [];
+  function recheckEnv() {
+    api("POST", "/environment/refresh").then(function (r) {
+      if (S.status) S.status.environment = r.environment;
+      toast(r.environment.ai.claude.found ? "Found it — AI assistants are ready" : "Still not found — did the install finish?");
+      render();
+    })["catch"](function (e) { toast(e.message); });
+  }
+
+  // ============ CONTACT ============
+  function openContact(name) {
+    S.contact = name;
+    loadPeer(name, true);
+    go("contact");
+  }
+  SCREENS.contact = function () {
+    var d = screenRoot("contact");
+    var c = contactOf(S.contact);
+    d.appendChild(hdr());
+
+    var head = css(E("div"), { display: "flex", alignItems: "center", gap: "16px", margin: "8px 0 24px" });
+    var av = E("div", "avatar", esc(c.initial));
+    css(av, { width: "64px", height: "64px", background: c.color, fontSize: "28px" });
+    head.appendChild(av);
+    var hh = E("div");
+    hh.appendChild(css(E("div", null, esc(c.name)), { fontSize: "26px", fontWeight: "800", letterSpacing: "-0.5px" }));
+    var st = css(E("div"), { display: "flex", alignItems: "center", gap: "6px", fontSize: "15px", color: "#5f6368" });
+    st.innerHTML = "<div style='width:8px;height:8px;border-radius:50%;background:" + (c.healthy ? GREEN : "#dadce0") + "'></div>" + (c.healthy ? "Online" : "Offline") + " · ";
+    var test = B("", "test connection", function () {
+      api("POST", "/test", { peer: c.name }).then(function (r) {
+        toast(r.party.name + " answered in " + r.latencyMs + " ms");
+      })["catch"](function () { toast(c.name + " didn't answer — are they online?"); });
+    });
+    css(test, { border: "none", background: "none", color: BLUE, fontSize: "15px", fontWeight: "600", cursor: "pointer", padding: "0" });
+    st.appendChild(test);
+    hh.appendChild(st);
+    head.appendChild(hh);
+    d.appendChild(head);
+
+    var stack = E("div", "stack");
+    // Ask — the blue primary card.
+    var granted = grantedAgents(c.name);
+    var askSub = granted.length
+      ? "They shared: " + granted.map(function (g) { return chipText(g); }).join(", ")
+      : "They haven't shared anything yet";
+    var ask = B("", "", function () { go("ask"); });
+    css(ask, { display: "flex", alignItems: "center", gap: "16px", width: "100%", background: BLUE, border: "none", borderRadius: "20px", padding: "20px", cursor: "pointer", textAlign: "left", boxShadow: "0 4px 0 " + BLUE_D });
+    ask.innerHTML =
+      "<div style='width:48px;height:48px;border-radius:14px;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center'>" +
+      "<svg width='24' height='24' viewBox='0 0 24 24' fill='none'><path d='M21 12a8 8 0 0 1-8 8H4l2.2-2.6A8 8 0 1 1 21 12z' stroke='#ffffff' stroke-width='2' stroke-linejoin='round'></path></svg></div>" +
+      "<div style='flex:1'><div style='font-size:18px;font-weight:700;color:#ffffff'>Ask their agents</div>" +
+      "<div style='font-size:14.5px;color:rgba(255,255,255,0.85);margin-top:2px'>" + esc(askSub) + "</div></div>" +
+      "<div style='color:rgba(255,255,255,0.6);font-size:22px;font-weight:700'>›</div>";
+    stack.appendChild(ask);
+
+    var share = B("card hov-green", "", function () { openShare(); });
+    share.innerHTML =
+      "<div class='glyph' style='width:48px;height:48px;background:" + GREEN_BG + "'>" +
+      "<svg width='24' height='24' viewBox='0 0 24 24' fill='none'><path d='M12 5v16M4 9h16v4H4zM4 13h16v8H4z' stroke='#178F58' stroke-width='2' stroke-linejoin='round'></path></svg></div>" +
+      "<div style='flex:1'><div style='font-size:18px;font-weight:700'>Share something</div>" +
+      "<div style='font-size:14.5px;color:#5f6368;margin-top:2px'>A folder, an agent, a server — you stay in control</div></div>" +
+      "<div class='chev'>›</div>";
+    stack.appendChild(share);
+
+    var act = B("card hov-amber", "", function () { go("activity"); });
+    act.innerHTML =
+      "<div class='glyph' style='width:48px;height:48px;background:" + AMBER_BG + "'>" +
+      "<svg width='24' height='24' viewBox='0 0 24 24' fill='none'><path d='M5 4h14v17H5z' stroke='#9A6700' stroke-width='2' stroke-linejoin='round'></path><path d='M9 9h6M9 13h6M9 17h4' stroke='#9A6700' stroke-width='2' stroke-linecap='round'></path></svg></div>" +
+      "<div style='flex:1'><div style='font-size:18px;font-weight:700'>Activity</div>" +
+      "<div style='font-size:14.5px;color:#5f6368;margin-top:2px'>Every use, every denial — both sides keep this log</div></div>" +
+      "<div class='chev'>›</div>";
+    stack.appendChild(act);
+    d.appendChild(stack);
+
+    var mine = (S.shares[c.name] || []).filter(function (x) { return x.status === "active"; });
+    if (mine.length) {
+      var eb = E("div", "eyebrow", "You share with " + esc(c.name));
+      css(eb, { margin: "32px 0 12px" });
+      d.appendChild(eb);
+      var list = E("div", "stack-sm");
+      mine.forEach(function (x) {
+        var row = E("div", "rowcard");
+        var g = shareGlyph(x.kind);
+        var gl = E("div", "glyph", g.glyph);
+        css(gl, { width: "40px", height: "40px", borderRadius: "12px", background: g.bg, color: g.fg, fontSize: "15px" });
+        row.appendChild(gl);
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", null, esc(shareLabel(x))), { fontSize: "16px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }));
+        mid.appendChild(css(E("div", null, esc(shareDesc(x))), { fontSize: "13.5px", color: "#5f6368" }));
+        row.appendChild(mid);
+        if (x.expiresAt) {
+          var ttl = E("div", "pill", esc(countdown(x.expiresAt)));
+          css(ttl, { color: AMBER, background: AMBER_BG });
+          row.appendChild(ttl);
+        }
+        var stop = B("", "Stop", function () {
+          api("POST", "/shares/stop", { id: x.id }).then(function () {
+            toast("Stopped — their next use is denied");
+            loadPeer(c.name, true);
+            refresh();
+          })["catch"](function (e2) { toast(e2.message); });
+        });
+        css(stop, { border: "2px solid #F9C1C1", borderRadius: "12px", background: "#ffffff", color: RED, fontSize: "14px", fontWeight: "700", cursor: "pointer", padding: "8px 16px" });
+        row.appendChild(stop);
+        list.appendChild(row);
+      });
+      d.appendChild(list);
+    }
+    return d;
+  };
+
+  function shareGlyph(kind) {
+    if (kind === "folder") return { glyph: "F", bg: BLUE_BG, fg: BLUE };
+    if (kind === "server") return { glyph: "SV", bg: AMBER_BG, fg: AMBER };
+    if (kind === "repo") return { glyph: "R", bg: RED_BG, fg: RED };
+    return { glyph: "AI", bg: GREEN_BG, fg: GREEN_D };
+  }
+  function shareLabel(x) {
+    if (x.kind === "folder") return baseName(x.value);
+    if (x.kind === "repo") return baseName(x.value);
+    return x.value;
+  }
+  function shareDesc(x) {
+    var kindLabel = { folder: "folder", server: "server", repo: "repository", agent: "my agent" }[x.kind] || x.kind;
+    var mode = x.mode === "rw" ? "read & write" : "look only";
+    return kindLabel + " · " + mode;
+  }
+
+  // ============ ASK ============
+  var USAGE = {
+    "scoped-fs": "Try “read brief.txt”, or “list”",
+    "scoped-git": "Try “branches”, or “log 10”",
+    "ssh-exec": "Type a command to run on their server",
+    "claude-code": "Plain language — ask about what they shared"
+  };
+  function chipText(a) {
+    var sc = (a.grant.scopes || [])[0];
+    if (sc && sc.kind === "fs" && a.id.indexOf("folder-") === 0) return baseName(sc.root);
+    if (sc && sc.kind === "ssh") return sc.host;
+    if (sc && sc.kind === "repo") return baseName(sc.url);
+    return a.id;
+  }
+  function chipGlyph(a) {
+    var sc = (a.grant.scopes || [])[0];
+    if (a.id.indexOf("folder-") === 0) return "F";
+    if (sc && sc.kind === "ssh") return "SV";
+    if (sc && sc.kind === "repo") return "R";
+    return "AI";
+  }
+  SCREENS.ask = function () {
+    var d = screenRoot("ask");
+    css(d, { display: "flex", flexDirection: "column", flex: "1" });
+    var c = contactOf(S.contact);
+
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    var av = E("div", "avatar", esc(c.initial));
+    css(av, { width: "40px", height: "40px", background: c.color, fontSize: "17px" });
+    head.appendChild(av);
+    var hh = E("div");
+    hh.appendChild(css(E("div", null, "Ask " + esc(c.name) + "'s agents"), { fontSize: "18px", fontWeight: "800" }));
+    hh.appendChild(css(E("div", null, "only what they shared · they see every ask"), { fontSize: "13px", color: "#5f6368" }));
+    head.appendChild(hh);
+    d.appendChild(head);
+
+    var granted = grantedAgents(c.name);
+    if (!granted.length) {
+      var empty = css(E("div"), { display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", paddingTop: "72px" });
+      empty.innerHTML =
+        "<div style='width:88px;height:88px;border-radius:50%;background:#e8eaed;display:flex;align-items:center;justify-content:center;margin-bottom:20px'>" +
+        "<svg width='38' height='38' viewBox='0 0 24 24' fill='none'><rect x='5' y='10' width='14' height='10' rx='2.5' stroke='#5f6368' stroke-width='2'></rect><path d='M8 10V7a4 4 0 0 1 8 0v3' stroke='#5f6368' stroke-width='2'></path></svg></div>" +
+        "<div style='font-size:22px;font-weight:800;margin-bottom:8px'>" + esc(c.name) + " hasn't shared anything yet</div>" +
+        "<div style='font-size:16px;color:#5f6368;line-height:1.5;max-width:360px'>Sharing happens on their side — ask them to open agentina and tap “Share something”.</div>";
+      d.appendChild(empty);
+      return d;
+    }
+
+    // Channels row — honest: mentions from a connected channel reach the
+    // same agents under the same rules; nothing is mirrored magically.
+    var convRow = css(E("div"), { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: "2px 0 10px" });
+    convRow.appendChild(css(E("div", null, "Talk here or via"), { fontSize: "13px", fontWeight: "700", color: "#9aa0a6" }));
+    var convKey = S.conv[c.name] || "console";
+    [{ key: "console", label: "Console" }, { key: "telegram", label: "Telegram" }, { key: "gitlab", label: "GitLab" }].forEach(function (cc) {
+      var b = B("chip-sm" + (convKey === cc.key ? " sel" : ""), esc(cc.label), function () {
+        if (cc.key !== "console" && !channelRunning(cc.key) && !channelConfigured(cc.key)) {
+          toast("Set up " + cc.label + " first");
+          S.channelId = cc.key;
+          go("channel");
+          return;
+        }
+        S.conv[c.name] = cc.key;
+        render();
+      });
+      convRow.appendChild(b);
+    });
+    d.appendChild(convRow);
+    if (convKey !== "console") {
+      var noteText = convKey === "telegram"
+        ? "Telegram is connected — @mention an agent from your bot and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity."
+        : "GitLab is connected — @mention an agent in an issue or MR comment and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity.";
+      var note = E("div", null, esc(noteText));
+      css(note, { background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "14px", padding: "12px 16px", fontSize: "14px", color: BLUE_D, fontWeight: "600", lineHeight: "1.5", marginBottom: "12px" });
+      d.appendChild(note);
+    }
+
+    // Share chips.
+    if (!S.chip[c.name] || !granted.some(function (a) { return a.id === S.chip[c.name]; })) {
+      S.chip[c.name] = granted[0].id;
+    }
+    var chips = css(E("div", "chips"), { margin: "6px 0 16px" });
+    granted.forEach(function (a) {
+      var sel = S.chip[c.name] === a.id;
+      var label = chipGlyph(a) + " · " + chipText(a);
+      if (a.grant.expiresAt) label += " · " + countdown(a.grant.expiresAt);
+      var b = B("chip" + (sel ? " sel" : ""), esc(label), function () { S.chip[c.name] = a.id; render(); });
+      chips.appendChild(b);
+    });
+    d.appendChild(chips);
+
+    // Thread.
+    var thread = css(E("div"), { flex: "1", display: "flex", flexDirection: "column", gap: "10px", paddingBottom: "16px" });
+    var entries = S.threads[c.name] || [];
     if (!entries.length) {
-      el.innerHTML = '<div class="empty" style="margin:auto">This is where the conversation lives — it survives refreshes, and you also see what they ask YOUR agents. Pick what to use above, then ask.</div>';
-      return;
+      var blank = E("div", null, "This conversation survives refreshes — and you also see what they ask your agents. Pick a share above, then ask.");
+      css(blank, { color: "#9aa0a6", textAlign: "center", margin: "auto", maxWidth: "360px", fontSize: "15px", lineHeight: "1.5" });
+      thread.appendChild(blank);
     }
     entries.forEach(function (m) {
-      if (m.pending) {
-        var pb = document.createElement("div");
-        pb.className = "bubble me";
-        pb.textContent = m.text;
-        el.appendChild(pb);
-        return;
-      }
+      if (m.pending) { thread.appendChild(E("div", "b-me", esc(m.text))); return; }
       if (m.dir === "out") {
-        var me = document.createElement("div");
-        me.className = "bubble me";
-        me.textContent = m.text;
-        el.appendChild(me);
-        var resp = document.createElement("div");
-        resp.className = "bubble " + (m.error ? "err" : "them");
-        resp.textContent = m.error ? "⛔ " + m.error : m.reply;
-        el.appendChild(resp);
+        thread.appendChild(E("div", "b-me", esc(m.text)));
+        if (m.error) thread.appendChild(E("div", "b-err", esc(m.error)));
+        else if (m.reply != null) thread.appendChild(E("div", "b-them", esc(m.reply)));
       } else {
-        var inb = document.createElement("div");
-        inb.className = "bubble in";
-        inb.innerHTML = "<b>" + esc(state.selected) + "</b> asked your <b>" + esc(m.agent) + "</b>: " + esc(m.text) +
-          (m.reply ? "<br>↳ " + esc(m.reply.slice(0, 300)) : "");
-        el.appendChild(inb);
+        var s = esc(c.name) + " asked your " + esc(m.agent || "agent") + ": “" + esc(String(m.text || "").slice(0, 120)) + "”";
+        thread.appendChild(E("div", "b-via", s));
       }
     });
-    el.scrollTop = el.scrollHeight;
-  }
+    d.appendChild(thread);
+
+    // Ask bar.
+    var chosen = granted.filter(function (a) { return a.id === S.chip[c.name]; })[0];
+    var ph = "Your message";
+    (chosen && chosen.tags || []).forEach(function (t) { if (USAGE[t]) ph = USAGE[t]; });
+    var bar = css(E("div"), { display: "flex", gap: "10px", position: "sticky", bottom: "20px" });
+    var input = E("input", "input");
+    input.id = "ask-input";
+    css(input, { flex: "1", height: "56px", boxShadow: "0 3px 0 #e8eaed" });
+    input.placeholder = ph;
+    input.value = S.form.ask || "";
+    input.oninput = function () { S.form.ask = input.value; };
+    var send = B("", "Ask", function () { sendAsk(); });
+    css(send, { width: "100px", height: "56px", border: "none", borderRadius: "16px", background: BLUE, color: "#ffffff", fontSize: "17px", fontWeight: "700", cursor: "pointer", boxShadow: "0 4px 0 " + BLUE_D, flex: "none" });
+    input.onkeydown = function (e) { if (e.key === "Enter") sendAsk(); };
+    bar.appendChild(input); bar.appendChild(send);
+    d.appendChild(bar);
+    return d;
+  };
+
   function sendAsk() {
-    var name = state.selected;
-    var text = $("ask-input").value.trim();
+    var name = S.contact;
+    var text = (S.form.ask || "").trim();
     if (!text) return;
-    var agent = state.chip[name];
-    state.threads[name] = state.threads[name] || [];
-    state.threads[name].push({ pending: true, text: text });
-    $("ask-input").value = "";
-    renderThread();
-    api("POST", "/task", { peer: name, agent: agent, message: text }).then(function () {
-      loadPeer(name); // the durable log now holds ask + reply
-    }).catch(function () {
-      loadPeer(name); // errors are logged too — reload shows the ⛔
+    S.form.ask = "";
+    S.threads[name] = S.threads[name] || [];
+    S.threads[name].push({ pending: true, text: text });
+    render();
+    scrollThread();
+    var inp = $("ask-input");
+    if (inp) inp.focus();
+    api("POST", "/task", { peer: name, agent: S.chip[name], message: text }).then(function () {
+      loadPeer(name, true);
+    })["catch"](function () {
+      loadPeer(name, true); // the error is in the durable log — reload shows it
     });
   }
-  $("ask-send").onclick = sendAsk;
-  $("ask-input").addEventListener("keydown", function (e) { if (e.key === "Enter") sendAsk(); });
 
-  // ---------- Sharing tab ----------
-  var KIND_ICON = { folder: "📁", server: "🖥", repo: "🌿", agent: "🤖" };
-  function renderShares() {
-    var name = state.selected;
-    var listEl = $("share-list");
-    var shares = (state.shares[name] || []).filter(function (x) { return x.status === "active"; });
-    listEl.innerHTML = "";
-    if (!shares.length) {
-      var hint = document.createElement("div");
-      hint.className = "hint";
-      hint.style.marginBottom = "6px";
-      hint.textContent = "You share nothing with " + name + " yet — connecting shares nothing by itself. Not sure what makes sense to share? ";
-      var lnk = document.createElement("button");
-      lnk.className = "link";
-      lnk.textContent = "Pick what you're doing together →";
-      lnk.onclick = function () { openWizard(); };
-      hint.appendChild(lnk);
-      listEl.appendChild(hint);
-    }
-    shares.forEach(function (x) {
-      var div = document.createElement("div");
-      div.className = "share-item";
-      var pretty = x.kind === "folder" ? (x.value.split("/").filter(Boolean).pop() || x.value) : x.value;
-      div.innerHTML =
-        "<span>" + (KIND_ICON[x.kind] || "•") + "</span>" +
-        '<span class="what"><b>' + esc(pretty) + "</b> " +
-        '<span class="meta">' + (x.mode === "rw" ? "read & write" : "read-only") +
-        (x.kind === "folder" ? " · " + esc(x.value) : "") +
-        (x.expiresAt ? " · " : "") + "</span>" +
-        (x.expiresAt ? '<span class="ttl">' + countdown(x.expiresAt) + "</span>" : "") + "</span>";
-      var btn = document.createElement("button");
-      btn.className = "danger"; btn.textContent = "Stop";
-      btn.onclick = function () {
-        api("POST", "/shares/stop", { id: x.id }).then(function () {
-          toast("Stopped — their next use is denied");
-          loadPeer(name);
-        }).catch(function (e) { toast("⛔ " + e.message); });
-      };
-      div.appendChild(btn);
-      listEl.appendChild(div);
-    });
+  // ============ SHARE WIZARD ============
+  function openShare() {
+    S.share = { step: "kind", kind: null, value: "", mode: "ro", duration: null };
+    loadQuickPicks();
+    go("share");
   }
-  function myAgents() {
-    return ((state.status && state.status.agents) || []).filter(function (a) {
-      return a.id !== "echo" && !a.session && !/^(folder|server|repo)-/.test(a.id);
-    });
+  var SHARE_KINDS = {
+    folder: { glyph: "F", fg: BLUE, bg: BLUE_BG, label: "A folder", desc: "Files they can use", title: "Which folder?", sub: "They see this folder — and never anything above it. Sneaky “..” paths fail, guaranteed.", ph: "/path/to/folder", mono: true },
+    agent: { glyph: "AI", fg: GREEN_D, bg: GREEN_BG, label: "One of my agents", desc: "It answers their questions", title: "Which agent?", sub: "It answers their questions — inside its own folder only.", ph: "agent name", mono: false },
+    server: { glyph: "SV", fg: AMBER, bg: AMBER_BG, label: "A server", desc: "Run commands, scoped", title: "Which server?", sub: "Commands run through the share — credentials never leave your machine.", ph: "user@host", mono: true },
+    repo: { glyph: "R", fg: RED, bg: RED_BG, label: "A repository", desc: "Browse code, no keys", title: "Which repository?", sub: "They can browse it through your machine — no deploy keys handed over.", ph: "https://… or git@…", mono: true }
+  };
+  var DURATIONS = [
+    { key: 3600, glyph: "1h", label: "1 hour", desc: "Quick help — gone before dinner" },
+    { key: 86400, glyph: "1d", label: "1 day", desc: "Today's task" },
+    { key: 604800, glyph: "1w", label: "1 week", desc: "This sprint" },
+    { key: 0, glyph: "∞", label: "Until I stop it", desc: "Ongoing — one tap ends it" }
+  ];
+  function durText(sec) {
+    if (!sec) return "until you stop it";
+    if (sec === 3600) return "for 1 hour";
+    if (sec === 86400) return "for 1 day";
+    return "for 1 week";
   }
-  $("sh-kind").onchange = function () {
-    var kind = $("sh-kind").value;
-    var isAgent = kind === "agent";
-    $("sh-agent").style.display = isAgent ? "" : "none";
-    $("sh-path").style.display = isAgent ? "" : "none";
-    $("sh-value").style.display = isAgent ? "none" : "";
-    if (isAgent) {
-      var sel = $("sh-agent");
-      sel.innerHTML = "";
-      myAgents().forEach(function (a) {
-        var o = document.createElement("option");
-        o.value = a.id; o.textContent = "🤖 " + a.id + " (" + a.adapter + ")";
-        sel.appendChild(o);
+  SCREENS.share = function () {
+    var d = screenRoot("share");
+    var c = contactOf(S.contact);
+    var st = S.share;
+
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    var prog = E("div", "progress", "<div></div>");
+    prog.firstChild.style.width = { kind: "16%", what: "36%", access: "56%", duration: "76%", confirm: "92%", done: "100%" }[st.step] || "16%";
+    head.appendChild(prog);
+    d.appendChild(head);
+
+    if (st.step === "kind") {
+      d.appendChild(E("div", "title2", "What do you want to share with " + esc(c.name) + "?"));
+      d.appendChild(E("div", "sub2", "Exactly this, nothing else — and you can stop it anytime."));
+      var grid = css(E("div"), { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" });
+      ["folder", "agent", "server", "repo"].forEach(function (k) {
+        var m = SHARE_KINDS[k];
+        var b = B("card", "", function () {
+          st.kind = k; st.value = ""; st.step = "what"; render();
+        });
+        css(b, { flexDirection: "column", gap: "10px", padding: "26px 16px", alignItems: "center" });
+        b.innerHTML =
+          "<div class='glyph' style='width:56px;height:56px;border-radius:16px;background:" + m.bg + ";color:" + m.fg + ";font-size:20px'>" + m.glyph + "</div>" +
+          "<div style='font-size:17px;font-weight:700'>" + m.label + "</div>" +
+          "<div style='font-size:13.5px;color:#5f6368;text-align:center;line-height:1.4'>" + m.desc + "</div>";
+        grid.appendChild(b);
       });
-      if (!sel.options.length) {
-        var o = document.createElement("option");
-        o.value = ""; o.textContent = "— create one in My agents first —";
-        sel.appendChild(o);
-      }
+      d.appendChild(grid);
+      return d;
     }
-    var ph = { folder: "/path/to/folder", server: "user@host", repo: "https://… or git@…" };
-    $("sh-value").placeholder = ph[kind] || "";
-  };
-  $("agents-toggle").onclick = function () { renderMyAgents(); $("myagents").style.display = "flex"; };
-  $("agents-close").onclick = function () { $("myagents").style.display = "none"; };
-  $("myagents").onclick = function (e) { if (e.target === $("myagents")) $("myagents").style.display = "none"; };
-  function renderMyAgents() {
-    var el = $("agents-list");
-    var agents = myAgents();
-    el.innerHTML = agents.length ? "" : '<div class="hint">No agents yet — create your first below.</div>';
-    agents.forEach(function (a) {
-      var div = document.createElement("div");
-      div.className = "share-item";
-      div.innerHTML = "<span>🤖</span>" +
-        '<span class="what"><b>' + esc(a.id) + "</b> " +
-        '<span class="meta">' + esc(a.adapter) + (a.model ? " · " + esc(a.model) : "") +
-        (a.workspace ? " · " + esc(a.workspace) : "") +
-        (a.hasPrompt ? " · has personality" : "") +
-        " · " + ((a.skillFiles || []).length) + " skill file(s)</span></span>";
-      el.appendChild(div);
-    });
-  }
-  $("ag-create").onclick = function () {
-    var id = $("ag-id").value.trim();
-    var ws = $("ag-workspace").value.trim();
-    if (!id) return toast("⛔ give the agent a name");
-    if (!ws) return toast("⛔ every agent needs a workspace folder");
-    api("POST", "/agents", {
-      id: id,
-      provider: $("ag-provider").value,
-      workspace: ws,
-      model: $("ag-model").value.trim() || undefined,
-      systemPrompt: $("ag-prompt").value.trim() || undefined,
-    }).then(function () {
-      toast("✓ Agent " + id + " created — share it from a contact&#39;s &#39;What I share&#39; tab");
-      $("ag-id").value = ""; $("ag-workspace").value = ""; $("ag-prompt").value = ""; $("ag-model").value = "";
-      refresh().then(renderMyAgents);
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
-  $("sh-go").onclick = function () {
-    var kind = $("sh-kind").value;
-    var value = kind === "agent" ? $("sh-agent").value : $("sh-value").value.trim();
-    if (!value) return toast(kind === "agent" ? "⛔ create an agent first (My agents)" : "⛔ what do you want to share?");
-    var body = {
-      peer: state.selected,
-      kind: kind,
-      value: value,
-      mode: $("sh-mode").value,
-    };
-    if (kind === "agent" && $("sh-path").value.trim()) body.path = $("sh-path").value.trim();
-    var dur = $("sh-for").value;
-    if (dur) body.durationSeconds = Number(dur);
-    api("POST", "/shares", body).then(function () {
-      toast("✓ Shared with " + state.selected + (dur ? " — self-destructs automatically" : ""));
-      $("sh-value").value = "";
-      loadPeer(state.selected);
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
 
-  // ---------- Activity tab ----------
-  function renderFeed() {
-    var feed = $("feed");
-    var entries = ((state.status && state.status.audit) || []).slice().reverse();
-    feed.innerHTML = entries.length ? "" : '<div class="hint">Nothing yet.</div>';
-    entries.forEach(function (e) {
-      var line = document.createElement("div");
-      line.className = e.decision;
-      var kind = e.kind === "task" ? "ask" : e.kind;
-      var what = kind + (e.agentId ? " · " + e.agentId : "") + (e.partyId ? " · " + e.partyId : "") +
-        (e.reason ? " · " + e.reason : "") + (e.detail ? " — " + e.detail : "");
-      line.innerHTML = '<span class="ts">' + esc(e.ts.slice(11, 19)) + "</span>" +
-        (e.decision === "denied" ? "✗ " : "· ") + esc(what);
-      feed.appendChild(line);
-    });
-  }
-
-  // ---------- tabs ----------
-  Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (b) {
-    b.onclick = function () {
-      Array.prototype.forEach.call(document.querySelectorAll("#tabs button"), function (x) { x.classList.remove("sel"); });
-      Array.prototype.forEach.call(document.querySelectorAll(".tabpane"), function (x) { x.classList.remove("sel"); });
-      b.classList.add("sel");
-      $("pane-" + b.getAttribute("data-tab")).classList.add("sel");
-    };
-  });
-
-  // ---------- pairing ----------
-  function makeInvite(outEl, waitEl) {
-    api("POST", "/invites").then(function (r) {
-      outEl.style.display = "block";
-      outEl.textContent = r.link;
-      if (waitEl) waitEl.style.display = "block";
-      if (navigator.clipboard) navigator.clipboard.writeText(r.link).then(function () { toast("Invite copied — send it to them"); });
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  }
-  $("ob-invite").onclick = function () { makeInvite($("ob-invite-out"), $("ob-wait")); };
-  $("ob-join-btn").onclick = function () {
-    var link = $("ob-join").value.trim();
-    if (!link) return toast("Paste the invite link first");
-    api("POST", "/join", { link: link }).then(function (r) {
-      toast('✓ Connected with "' + r.party.name + '"');
-      refresh();
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
-  $("btn-add").onclick = function () {
-    $("dlg-invite-link").textContent = "…";
-    $("dlg-invite").showModal();
-    makeInvite($("dlg-invite-link"), null);
-  };
-  $("c-wizard").onclick = function () { openWizard(); };
-  $("c-test").onclick = function () {
-    api("POST", "/test", { peer: state.selected }).then(function (r) {
-      toast("✓ " + r.party.name + " answered in " + r.latencyMs + "ms");
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
-
-  // ---------- advanced ----------
-  $("adv-toggle").onclick = function () { $("advanced").style.display = "flex"; };
-  $("adv-close").onclick = function () { $("advanced").style.display = "none"; };
-  $("advanced").onclick = function (e) { if (e.target === $("advanced")) $("advanced").style.display = "none"; };
-  $("btn-ch-tg").onclick = function () {
-    var env = $("ch-tg-env").value.trim();
-    if (!env) return toast("⛔ name the env var holding the bot token");
-    api("POST", "/channels", { kind: "telegram", tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start Telegram"); })
-      .catch(function (e) { toast("⛔ " + e.message); });
-  };
-  $("btn-ch-gl").onclick = function () {
-    var host = $("ch-gl-host").value.trim();
-    var env = $("ch-gl-env").value.trim();
-    if (!host || !env) return toast("⛔ GitLab needs a host and a token env var");
-    api("POST", "/channels", { kind: "gitlab", host: host, tokenEnv: env }).then(function () { toast("✓ Saved — restart the node to start GitLab"); })
-      .catch(function (e) { toast("⛔ " + e.message); });
-  };
-
-  // ---------- Simple/Advanced mode ----------
-  function applyMode(mode) {
-    document.body.classList.toggle("simple", mode !== "advanced");
-    $("mode-toggle").textContent = mode === "advanced" ? "Simple view" : "Advanced";
-  }
-  $("mode-toggle").onclick = function () {
-    var next = document.body.classList.contains("simple") ? "advanced" : "simple";
-    applyMode(next);
-    api("POST", "/ui", { mode: next }).catch(function () {});
-  };
-
-  // ---------- environment: AI available or one-command install ----------
-  function applyEnvironment(env) {
-    if (!env) return;
-    var ready = env.ai && env.ai.claude && env.ai.claude.found;
-    $("ai-banner").style.display = ready ? "none" : "flex";
-    if (!ready) $("ai-cmd").textContent = env.ai.installCommand;
-    state.aiReady = Boolean(ready);
-    state.env = env;
-  }
-  $("ai-copy").onclick = function () {
-    if (navigator.clipboard) navigator.clipboard.writeText($("ai-cmd").textContent).then(function () { toast("Copied — paste it in a terminal"); });
-  };
-  $("ai-recheck").onclick = function () {
-    api("POST", "/environment/refresh").then(function (r) {
-      applyEnvironment(r.environment);
-      toast(r.environment.ai.claude.found ? "✓ Found it — AI assistants are ready" : "Still not found — did the install finish?");
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  };
-
-  // ---------- path picker: OS-feel directory autocomplete ----------
-  function attachPathPicker(input) {
-    if (input.dataset.pp) return;
-    input.dataset.pp = "1";
-    var wrap = document.createElement("div");
-    wrap.className = "pp-wrap";
-    input.parentNode.insertBefore(wrap, input);
-    wrap.appendChild(input);
-    var drop = document.createElement("div");
-    drop.className = "pp-drop";
-    wrap.appendChild(drop);
-    var timer = null;
-    function close() { drop.style.display = "none"; }
-    function open() { drop.style.display = "block"; }
-    function load() {
-      api("GET", "/fs/suggest?path=" + encodeURIComponent(input.value)).then(function (r) {
-        drop.innerHTML = "";
-        if (!input.value.trim() && (r.quickPicks || []).length) {
-          var chips = document.createElement("div");
-          chips.className = "pp-chips";
-          r.quickPicks.forEach(function (q) {
-            var c = document.createElement("span");
-            c.className = "pp-chip";
-            c.textContent = q.label;
-            c.onclick = function () { input.value = q.path; load(); input.focus(); };
-            chips.appendChild(c);
-          });
-          drop.appendChild(chips);
+    var m = SHARE_KINDS[st.kind];
+    if (st.step === "what") {
+      d.appendChild(E("div", "title2", m.title));
+      d.appendChild(E("div", "sub2", m.sub));
+      var input = E("input", "input" + (m.mono ? " mono" : ""));
+      input.placeholder = m.ph;
+      input.value = st.value;
+      input.oninput = function () {
+        st.value = input.value;
+        if (st.kind === "folder") {
+          clearTimeout(S.sugT);
+          S.sugT = setTimeout(function () { loadDirSuggestions(input.value); }, 250);
         }
-        (r.dirs || []).forEach(function (d) {
-          var item = document.createElement("div");
-          item.className = "pp-item";
-          item.textContent = d;
-          item.onmousedown = function (e) { e.preventDefault(); input.value = d; load(); };
-          drop.appendChild(item);
-        });
-        if (drop.children.length) open(); else close();
-      }).catch(close);
-    }
-    input.addEventListener("focus", load);
-    input.addEventListener("input", function () {
-      clearTimeout(timer);
-      timer = setTimeout(load, 200);
-    });
-    input.addEventListener("blur", function () { setTimeout(close, 150); });
-  }
-  ["sh-value", "sh-path", "ag-workspace"].forEach(function (id) {
-    if ($(id)) attachPathPicker($(id));
-  });
-
-  // ---------- scenario wizard ----------
-  var wiz = { scenarios: [], scenario: null, role: 0 };
-  function openWizard() {
-    api("GET", "/scenarios").then(function (r) {
-      wiz.scenarios = r.scenarios || [];
-      wiz.scenario = null;
-      renderWizard();
-      $("wizard").style.display = "flex";
-    }).catch(function (e) { toast("⛔ " + e.message); });
-  }
-  $("wiz-close").onclick = function () { $("wizard").style.display = "none"; };
-  $("wizard").onclick = function (e) { if (e.target === $("wizard")) $("wizard").style.display = "none"; };
-  function renderWizard() {
-    var body = $("wiz-body");
-    body.innerHTML = "";
-    if (!wiz.scenario) {
-      $("wiz-title").textContent = "What are you and " + state.selected + " doing together?";
-      wiz.scenarios.forEach(function (s) {
-        var card = document.createElement("div");
-        card.className = "scn-card";
-        card.innerHTML = "<b>" + esc(s.title) + "</b><span class='hint'>" + esc(s.tagline) + "</span>";
-        card.onclick = function () { wiz.scenario = s; wiz.role = -1; renderWizard(); };
-        body.appendChild(card);
-      });
-      return;
-    }
-    if (wiz.role === -1) {
-      $("wiz-title").textContent = wiz.scenario.title + " — which one are you?";
-      wiz.scenario.roles.forEach(function (role, i) {
-        var card = document.createElement("div");
-        card.className = "scn-card";
-        card.innerHTML = "<b>I'm " + esc(role) + "</b>";
-        card.onclick = function () { wiz.role = i; renderWizard(); };
-        body.appendChild(card);
-      });
-      return;
-    }
-    var steps = wiz.scenario.steps[wiz.role];
-    $("wiz-title").textContent = wiz.scenario.title + " — your setup";
-    if (!steps.length) {
-      body.innerHTML = "<div class='hint'>Nothing to set up on your side — <b>" + esc(state.selected) + "</b> does the sharing in this scenario. When they finish, what they shared appears in your <b>Ask them</b> tab.</div>";
-      return;
-    }
-    steps.forEach(function (step, idx) {
-      var div = document.createElement("div");
-      div.className = "wiz-step";
-      div.id = "wiz-step-" + idx;
-      var needsAiBlocked = step.needsAi && !state.aiReady;
-      var needsBlocked = step.needs && state.env && state.env[step.needs] === false;
-      var html = "<b>" + (idx + 1) + ". " + esc(step.title) + "</b>";
-      if (needsAiBlocked) {
-        html += "<div class='hint'>Needs the AI runtime — use the install banner above, then reopen this.</div>";
-        div.innerHTML = html;
-        body.appendChild(div);
-        return;
-      }
-      if (needsBlocked) {
-        html += "<div class='hint'>Not available on this machine (missing " + esc(step.needs) + ").</div>";
-        div.innerHTML = html;
-        body.appendChild(div);
-        return;
-      }
-      div.innerHTML = html;
-      var row = document.createElement("div");
-      row.className = "row";
-      var valueInput = document.createElement("input");
-      valueInput.placeholder = step.defaults.valueHint || "";
-      var needsPath = step.action === "create-agent" || step.action === "share-folder";
-      row.appendChild(valueInput);
-      var durLabel = document.createElement("span");
-      durLabel.className = "hint";
-      if (step.defaults.durationSeconds) {
-        var d = step.defaults.durationSeconds;
-        durLabel.textContent = "for " + (d >= 86400 * 2 ? Math.round(d / 86400) + " days" : d >= 3600 ? Math.round(d / 3600) + " hour(s)" : Math.round(d / 60) + " min") + ", then it stops itself";
-      } else {
-        durLabel.textContent = step.defaults.mode === "rw" ? "read & write, until you stop it" : "read-only, until you stop it";
-      }
-      row.appendChild(durLabel);
-      var go = document.createElement("button");
-      go.textContent = "Do it";
-      go.onclick = function () {
-        go.disabled = true;
-        runStep(step, valueInput.value.trim()).then(function () {
-          div.classList.add("done");
-          go.textContent = "✓ done";
-          loadPeer(state.selected);
-        }).catch(function (e) {
-          toast("⛔ " + e.message);
-          go.disabled = false;
-        });
       };
-      row.appendChild(go);
-      div.appendChild(row);
-      body.appendChild(div);
-      if (needsPath) attachPathPicker(valueInput);
-    });
-    var done = document.createElement("div");
-    done.className = "hint";
-    done.style.marginTop = "6px";
-    done.textContent = "When these say done, tell " + state.selected + " to pick the same scenario on their side — their steps mirror yours.";
-    body.appendChild(done);
-  }
-  function runStep(step, value) {
-    if (!value && step.action !== "share-agent") return Promise.reject(new Error("fill in the field first"));
-    if (step.action === "create-agent") {
-      return api("POST", "/agents", {
-        id: step.defaults.agentId || "assistant",
-        provider: "claude-code",
-        workspace: value,
-        systemPrompt: step.defaults.agentPrompt,
+      d.appendChild(input);
+      var sugs = css(E("div", "chips"), { marginTop: "14px" });
+      sugs.id = "sugs";
+      d.appendChild(sugs);
+      renderSuggestions(sugs);
+      var next = B("btn btn-blue", "Continue", function () {
+        if (!(st.value || "").trim()) { toast("Pick or type something first"); return; }
+        st.value = st.value.trim();
+        st.step = "access"; render();
       });
+      css(next, { marginTop: "28px" });
+      input.onkeydown = function (e) { if (e.key === "Enter") next.click(); };
+      d.appendChild(next);
+      return d;
     }
-    if (step.action === "share-agent") {
-      return api("POST", "/shares", {
-        peer: state.selected,
-        kind: "agent",
-        value: step.defaults.agentId || "assistant",
-        mode: step.defaults.mode || "ro",
-        durationSeconds: step.defaults.durationSeconds,
+
+    if (st.step === "access") {
+      d.appendChild(E("div", "title2", "How much can they do?"));
+      d.appendChild(E("div", "sub2", "Look only means look only — enforced by your machine, not by trust."));
+      var stack = E("div", "stack");
+      var opt = function (glyph, glyphBg, glyphFg, label, desc, mode) {
+        var b = B("card", "", function () { st.mode = mode; st.step = "duration"; render(); });
+        b.innerHTML =
+          "<div class='glyph' style='width:48px;height:48px;background:" + glyphBg + ";color:" + glyphFg + ";font-size:16px'>" + glyph + "</div>" +
+          "<div><div style='font-size:18px;font-weight:700'>" + label + "</div>" +
+          "<div style='font-size:14.5px;color:#5f6368;margin-top:2px'>" + desc + "</div></div>";
+        return b;
+      };
+      stack.appendChild(opt("RO", BLUE_BG, BLUE, "Look only", "They can read — never change anything", "ro"));
+      stack.appendChild(opt("RW", AMBER_BG, AMBER, "Read &amp; write", "They can also make changes — still only here", "rw"));
+      d.appendChild(stack);
+      return d;
+    }
+
+    if (st.step === "duration") {
+      d.appendChild(E("div", "title2", "For how long?"));
+      d.appendChild(E("div", "sub2", "When time's up it self-destructs — no cleanup to remember."));
+      var stack2 = E("div", "stack");
+      DURATIONS.forEach(function (opt) {
+        var b = B("card", "", function () { st.duration = opt.key; st.step = "confirm"; render(); });
+        b.innerHTML =
+          "<div class='glyph' style='width:44px;height:44px;background:" + BLUE_BG + ";color:" + BLUE + ";font-size:14px'>" + opt.glyph + "</div>" +
+          "<div><div style='font-size:18px;font-weight:700'>" + opt.label + "</div>" +
+          "<div style='font-size:14.5px;color:#5f6368;margin-top:2px'>" + opt.desc + "</div></div>";
+        stack2.appendChild(b);
       });
+      d.appendChild(stack2);
+      return d;
     }
-    var kind = step.action.replace("share-", "");
-    return api("POST", "/shares", {
-      peer: state.selected,
-      kind: kind,
-      value: value,
-      mode: step.defaults.mode || "ro",
-      durationSeconds: step.defaults.durationSeconds,
+
+    if (st.step === "confirm") {
+      d.appendChild(E("div", "title2", "Ready to share?"));
+      d.appendChild(E("div", "sub2", "This is everything " + esc(c.name) + " will get."));
+      var box = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "14px" });
+      box.innerHTML =
+        "<div style='display:flex;align-items:center;gap:14px'>" +
+        "<div class='glyph' style='width:44px;height:44px;background:" + m.bg + ";color:" + m.fg + ";font-size:15px'>" + m.glyph + "</div>" +
+        "<div style='font-size:18px;font-weight:700;word-break:break-all'>" + esc(st.value) + "</div></div>" +
+        "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>" + (st.mode === "rw" ? "RW" : "RO") + "</div>" + (st.mode === "rw" ? "Read &amp; write" : "Look only — they can never change anything") + "</div>" +
+        "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>TTL</div>" + (st.duration ? "Self-destructs after " + durText(st.duration).replace("for ", "") : "Until you stop it") + "</div>" +
+        "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center;color:" + RED + "'>STOP</div>You can stop it anytime, in one tap</div>";
+      d.appendChild(box);
+      var goBtn = B("btn btn-green", "Share it", function () {
+        goBtn.disabled = true;
+        var body = { peer: c.name, kind: st.kind, value: st.value, mode: st.mode };
+        if (st.duration) body.durationSeconds = st.duration;
+        api("POST", "/shares", body).then(function () {
+          st.step = "done";
+          loadPeer(c.name, false);
+          refresh();
+          render();
+        })["catch"](function (e) { goBtn.disabled = false; toast(e.message); });
+      });
+      css(goBtn, { marginTop: "24px" });
+      d.appendChild(goBtn);
+      return d;
+    }
+
+    // done
+    var doneBox = css(E("div"), { display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", paddingTop: "64px" });
+    doneBox.appendChild(checkCircle());
+    doneBox.appendChild(css(E("div", null, "Shared with " + esc(c.name) + "!"), { fontSize: "28px", fontWeight: "800", letterSpacing: "-0.5px", margin: "28px 0 8px" }));
+    doneBox.appendChild(css(E("div", null,
+      esc(st.value) + " · " + (st.mode === "rw" ? "read & write" : "look only") + " · " + durText(st.duration) + ".<br>It shows up in their “Ask” screen right away."
+    ), { fontSize: "16.5px", color: "#5f6368", lineHeight: "1.5", maxWidth: "360px" }));
+    var doneBtn = B("btn btn-blue", "Done", function () { S.screen = "contact"; S.stack = ["home"]; render(); });
+    css(doneBtn, { marginTop: "36px" });
+    doneBox.appendChild(doneBtn);
+    d.appendChild(doneBox);
+    return d;
+  };
+
+  function renderSuggestions(container) {
+    container.innerHTML = "";
+    var st = S.share;
+    var picks = [];
+    if (st.kind === "agent") {
+      picks = myAgents().map(function (a) { return { label: a.id, value: a.id }; });
+    } else if (st.kind === "folder") {
+      picks = (S.quickPicks || []).map(function (q) { return { label: q.label, value: q.path }; });
+    }
+    picks.slice(0, 6).forEach(function (p) {
+      container.appendChild(B("sug", esc(p.label), function () {
+        st.value = p.value;
+        var inp = document.querySelector("input.input");
+        if (inp) inp.value = p.value;
+      }));
     });
   }
+  function loadDirSuggestions(path) {
+    if (cur() !== "share" || S.share.step !== "what" || S.share.kind !== "folder") return;
+    api("GET", "/fs/suggest?path=" + encodeURIComponent(path)).then(function (r) {
+      var box = $("sugs");
+      if (!box) return;
+      box.innerHTML = "";
+      var dirs = (r.dirs || []).slice(0, 6);
+      if (!dirs.length && !path.trim()) { renderSuggestions(box); return; }
+      dirs.forEach(function (p) {
+        box.appendChild(B("sug", esc(p), function () {
+          S.share.value = p;
+          var inp = document.querySelector("input.input");
+          if (inp) { inp.value = p; inp.focus(); }
+          loadDirSuggestions(p);
+        }));
+      });
+    })["catch"](function () { /* */ });
+  }
+
+  // ============ MY AGENTS ============
+  var PROVIDERS = [
+    { key: "claude-code", label: "Claude Code", desc: "Anthropic's CLI — thinks in its folder", probe: "claude", supported: true },
+    { key: "gemini-cli", label: "Gemini CLI", desc: "Google's assistant CLI", probe: "gemini", supported: false },
+    { key: "codex", label: "Codex CLI", desc: "OpenAI's assistant CLI", probe: "codex", supported: false },
+    { key: "scoped-fs", label: "Files only", desc: "No AI — serves files from the folder", probe: null, supported: true }
+  ];
+  function providerLabel(key) {
+    var p = PROVIDERS.filter(function (x) { return x.key === key; })[0];
+    return p ? p.label : key;
+  }
+  SCREENS.agents = function () {
+    var d = screenRoot("agents");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "My agents"));
+    d.appendChild(E("div", "sub2", "Your AI workers. Tap one to edit it, pick its skills, or change its runtime."));
+    var list = E("div", "stack");
+    var agents = myAgents();
+    if (!agents.length) {
+      var blank = E("div", null, "No agents yet — create your first below. It lives in a folder and answers questions about what's inside.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center", lineHeight: "1.5" });
+      list.appendChild(blank);
+    }
+    agents.forEach(function (a) {
+      var card = B("card", "", function () { openAgentEdit(a); });
+      var skills = a.skills || [];
+      var on = skills.filter(function (s) { return s.on; }).length;
+      var descParts = [providerLabel(a.adapter)];
+      if (a.workspace) descParts.push(a.workspace);
+      if (skills.length) descParts.push(on + "/" + skills.length + " skills on");
+      card.innerHTML =
+        "<div class='glyph' style='width:52px;height:52px;border-radius:16px;background:" + GREEN_BG + ";color:" + GREEN_D + ";font-size:16px'>AI</div>" +
+        "<div style='flex:1;min-width:0'><div style='font-size:18px;font-weight:700'>" + esc(a.id) + "</div>" +
+        "<div style='font-size:14px;color:#5f6368;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(descParts.join(" · ")) + "</div></div>" +
+        (agentShared(a.id) ? "<div class='pill' style='color:" + GREEN_D + ";background:" + GREEN_BG + "'>shared</div>" : "") +
+        "<div class='chev'>›</div>";
+      list.appendChild(card);
+    });
+    d.appendChild(list);
+    var newB = B("btn btn-green", "+ New agent", function () {
+      S.agentNew = { step: "name", name: "", folder: "", purpose: "" };
+      loadQuickPicks();
+      go("agentNew");
+    });
+    css(newB, { marginTop: "20px" });
+    d.appendChild(newB);
+    var rt = B("linkbtn", "AI runtimes — Claude, Gemini, Codex →", function () { go("runtimes"); });
+    css(rt, { alignSelf: "center", marginTop: "24px" });
+    d.appendChild(rt);
+    return d;
+  };
+
+  // ============ AGENT EDIT ============
+  function openAgentEdit(a) {
+    S.edit = {
+      id: a.id,
+      provider: a.adapter,
+      workspace: a.workspace || "",
+      purpose: a.prompt || "",
+      skills: (a.skills || []).map(function (s) { return { file: s.file, desc: s.desc, on: s.on }; })
+    };
+    go("agentEdit");
+  }
+  SCREENS.agentEdit = function () {
+    var d = screenRoot("agentEdit");
+    var ed = S.edit || { id: "?", skills: [] };
+    d.appendChild(hdr());
+
+    var head = css(E("div"), { display: "flex", alignItems: "center", gap: "16px", margin: "8px 0 24px" });
+    head.innerHTML =
+      "<div class='glyph' style='width:60px;height:60px;border-radius:18px;background:" + GREEN_BG + ";color:" + GREEN_D + ";font-size:18px'>AI</div>" +
+      "<div><div style='font-size:26px;font-weight:800;letter-spacing:-0.5px'>" + esc(ed.id) + "</div>" +
+      "<div style='font-size:14.5px;color:#5f6368'>" + (agentShared(ed.id) ? "Shared with a contact — changes apply to their next ask" : "Not shared yet") + "</div></div>";
+    d.appendChild(head);
+
+    d.appendChild(E("div", "eyebrow", "Runtime"));
+    var radios = css(E("div", "stack-sm"), { marginBottom: "24px" });
+    PROVIDERS.forEach(function (p) {
+      var sel = ed.provider === p.key;
+      var installed = p.probe ? runtimeProbe(p.probe).found : true;
+      var b = B("", "", function () {
+        if (!p.supported) { toast(p.label + " support is coming — Claude Code is the AI runtime today"); return; }
+        if (p.probe && !installed) toast(p.label + " isn't installed — see AI runtimes");
+        ed.provider = p.key;
+        render();
+      });
+      css(b, { display: "flex", alignItems: "center", gap: "14px", width: "100%", background: sel ? BLUE_BG : "#ffffff", border: "2px solid " + (sel ? BLUE : "#e8eaed"), borderRadius: "16px", padding: "14px 16px", cursor: "pointer", textAlign: "left" });
+      var pillHtml = !p.supported
+        ? "<div class='pill' style='color:" + AMBER + ";background:" + AMBER_BG + "'>coming soon</div>"
+        : (p.probe && !installed ? "<div class='pill' style='color:" + AMBER + ";background:" + AMBER_BG + "'>not installed</div>" : "");
+      b.innerHTML =
+        "<div style='width:22px;height:22px;border-radius:50%;border:2px solid " + (sel ? BLUE : "#dadce0") + ";background:" + (sel ? BLUE : "#ffffff") + ";display:flex;align-items:center;justify-content:center;flex:none'>" +
+        (sel ? "<div style='width:10px;height:10px;border-radius:50%;background:#ffffff'></div>" : "") + "</div>" +
+        "<div style='flex:1'><div style='font-size:16px;font-weight:700'>" + p.label + "</div>" +
+        "<div style='font-size:13.5px;color:#5f6368'>" + p.desc + "</div></div>" + pillHtml;
+      radios.appendChild(b);
+    });
+    d.appendChild(radios);
+    var rtLink = B("linkbtn", "How to set these up alongside agentina →", function () { go("runtimes"); });
+    css(rtLink, { alignSelf: "flex-start", padding: "0", margin: "-14px 0 24px" });
+    d.appendChild(rtLink);
+
+    d.appendChild(E("div", "eyebrow", "Workspace folder"));
+    var ws = E("input", "input mono");
+    css(ws, { height: "54px", marginBottom: "24px" });
+    ws.value = ed.workspace;
+    ws.oninput = function () { ed.workspace = ws.value; };
+    d.appendChild(ws);
+
+    d.appendChild(E("div", "eyebrow", "What it helps with"));
+    var pp = E("input", "input");
+    css(pp, { height: "54px", marginBottom: "24px" });
+    pp.placeholder = "e.g. answer questions about the Acme project";
+    pp.value = ed.purpose;
+    pp.oninput = function () { ed.purpose = pp.value; };
+    d.appendChild(pp);
+
+    d.appendChild(E("div", "eyebrow", "Skills"));
+    d.appendChild(css(E("div", null, "Markdown files in <span class='mono' style='font-size:12.5px'>workspace/skills/</span> — edit them anytime, the next answer uses them. Toggle which ones are active."), { fontSize: "14px", color: "#5f6368", lineHeight: "1.5", marginBottom: "12px" }));
+    if (ed.skills.length) {
+      var list = E("div", "stack-sm");
+      ed.skills.forEach(function (sk) {
+        var row = E("div", "rowcard");
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", "mono", esc(sk.file)), { fontSize: "13.5px", fontWeight: "700" }));
+        if (sk.desc) mid.appendChild(css(E("div", null, esc(sk.desc)), { fontSize: "13.5px", color: "#5f6368", marginTop: "2px" }));
+        row.appendChild(mid);
+        var tg = B("toggle", "<div></div>", function () { sk.on = !sk.on; render(); });
+        tg.style.background = sk.on ? GREEN : "#dadce0";
+        tg.firstChild.style.left = sk.on ? "25px" : "3px";
+        row.appendChild(tg);
+        list.appendChild(row);
+      });
+      d.appendChild(list);
+    } else {
+      var blank = E("div", null, "No skills yet — drop a .md file in <span class='mono' style='font-size:12.5px'>workspace/skills/</span> and it appears here.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center" });
+      d.appendChild(blank);
+    }
+
+    var save = B("btn btn-blue", "Save changes", function () {
+      if (!(ed.workspace || "").trim()) { toast("Every agent needs a workspace folder"); return; }
+      save.disabled = true;
+      api("POST", "/agents", {
+        id: ed.id,
+        provider: ed.provider,
+        workspace: ed.workspace.trim(),
+        systemPrompt: (ed.purpose || "").trim() || undefined,
+        disabledSkills: ed.skills.filter(function (s) { return !s.on; }).map(function (s) { return s.file; })
+      }).then(function () {
+        toast("Saved — applies to the next ask");
+        refresh().then(function () { back(); });
+      })["catch"](function (e) { save.disabled = false; toast(e.message); });
+    });
+    css(save, { marginTop: "28px" });
+    d.appendChild(save);
+    return d;
+  };
+
+  // ============ NEW AGENT ============
+  SCREENS.agentNew = function () {
+    var d = screenRoot("agentNew");
+    var st = S.agentNew;
+
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    var prog = E("div", "progress", "<div></div>");
+    prog.firstChild.style.width = { name: "25%", folder: "50%", purpose: "75%", done: "100%" }[st.step] || "25%";
+    head.appendChild(prog);
+    d.appendChild(head);
+
+    if (st.step === "name") {
+      d.appendChild(E("div", "title2", "Name your agent"));
+      d.appendChild(E("div", "sub2", "Short and memorable — people will @mention it."));
+      var input = E("input", "input");
+      input.placeholder = "e.g. bookkeeper";
+      input.value = st.name;
+      input.oninput = function () { st.name = input.value; };
+      d.appendChild(input);
+      var next = B("btn btn-blue", "Continue", function () {
+        if (!(st.name || "").trim()) { toast("Give it a name first"); return; }
+        st.name = st.name.trim();
+        st.step = "folder"; render();
+      });
+      css(next, { marginTop: "28px" });
+      input.onkeydown = function (e) { if (e.key === "Enter") next.click(); };
+      d.appendChild(next);
+      return d;
+    }
+
+    if (st.step === "folder") {
+      d.appendChild(E("div", "title2", "Which folder does it work in?"));
+      d.appendChild(E("div", "sub2", "Its whole world — it can't see outside this folder."));
+      var input2 = E("input", "input mono");
+      input2.placeholder = "/path/to/its/folder";
+      input2.value = st.folder;
+      input2.oninput = function () { st.folder = input2.value; };
+      d.appendChild(input2);
+      var sugs = css(E("div", "chips"), { marginTop: "14px" });
+      (S.quickPicks || []).slice(0, 6).forEach(function (q) {
+        sugs.appendChild(B("sug", esc(q.label), function () { st.folder = q.path; input2.value = q.path; }));
+      });
+      d.appendChild(sugs);
+      var next2 = B("btn btn-blue", "Continue", function () {
+        if (!(st.folder || "").trim()) { toast("Every agent needs a folder"); return; }
+        st.folder = st.folder.trim();
+        st.step = "purpose"; render();
+      });
+      css(next2, { marginTop: "28px" });
+      input2.onkeydown = function (e) { if (e.key === "Enter") next2.click(); };
+      d.appendChild(next2);
+      return d;
+    }
+
+    if (st.step === "purpose") {
+      d.appendChild(E("div", "title2", "What should it help with?"));
+      d.appendChild(E("div", "sub2", "Plain language — this becomes its personality."));
+      var input3 = E("input", "input");
+      input3.placeholder = "e.g. answer questions about the Acme project";
+      input3.value = st.purpose;
+      input3.oninput = function () { st.purpose = input3.value; };
+      d.appendChild(input3);
+      var create = B("btn btn-green", "Create agent", function () {
+        create.disabled = true;
+        api("POST", "/agents", {
+          id: st.name,
+          provider: "claude-code",
+          workspace: st.folder,
+          systemPrompt: (st.purpose || "").trim() || undefined
+        }).then(function () {
+          st.step = "done";
+          refresh();
+          render();
+        })["catch"](function (e) { create.disabled = false; toast(e.message); });
+      });
+      css(create, { marginTop: "28px" });
+      input3.onkeydown = function (e) { if (e.key === "Enter") create.click(); };
+      d.appendChild(create);
+      return d;
+    }
+
+    var doneBox = css(E("div"), { display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", paddingTop: "64px" });
+    doneBox.appendChild(checkCircle());
+    doneBox.appendChild(css(E("div", null, esc(st.name) + " is ready!"), { fontSize: "28px", fontWeight: "800", letterSpacing: "-0.5px", margin: "28px 0 8px" }));
+    doneBox.appendChild(css(E("div", null, "It lives in its folder and waits. Share it with a contact and it starts answering."), { fontSize: "16.5px", color: "#5f6368", lineHeight: "1.5", maxWidth: "360px" }));
+    var doneBtn = B("btn btn-blue", "Done", function () { S.screen = "agents"; S.stack = ["home"]; render(); });
+    css(doneBtn, { marginTop: "36px" });
+    doneBox.appendChild(doneBtn);
+    d.appendChild(doneBox);
+    return d;
+  };
+
+  // ============ AI RUNTIMES ============
+  var RUNTIMES = [
+    { key: "claude", name: "Claude Code", glyph: "CC", bg: BLUE_BG, fg: BLUE, desc: "Anthropic's CLI — the default runtime", cmd: "npm i -g @anthropic-ai/claude-code", url: "https://docs.anthropic.com/en/docs/claude-code/overview" },
+    { key: "gemini", name: "Gemini CLI", glyph: "GM", bg: GREEN_BG, fg: GREEN_D, desc: "Google's open-source assistant CLI", cmd: "npm i -g @google/gemini-cli", url: "https://github.com/google-gemini/gemini-cli" },
+    { key: "codex", name: "Codex CLI", glyph: "CX", bg: AMBER_BG, fg: AMBER, desc: "OpenAI's assistant CLI", cmd: "npm i -g @openai/codex", url: "https://github.com/openai/codex" }
+  ];
+  SCREENS.runtimes = function () {
+    var d = screenRoot("runtimes");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "AI runtimes"));
+    d.appendChild(E("div", "sub2", "agentina drives whichever assistant CLI you already use. Install one, then pick it as an agent's runtime — the agent stays jailed to its folder either way."));
+    var stack = E("div", "stack");
+    RUNTIMES.forEach(function (rt) {
+      var probe = runtimeProbe(rt.key);
+      var card = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px" });
+      var top = css(E("div"), { display: "flex", alignItems: "center", gap: "14px", marginBottom: "12px" });
+      top.innerHTML =
+        "<div class='glyph' style='width:48px;height:48px;background:" + rt.bg + ";color:" + rt.fg + ";font-size:15px'>" + rt.glyph + "</div>" +
+        "<div style='flex:1'><div style='font-size:17px;font-weight:700'>" + rt.name + "</div>" +
+        "<div style='font-size:13.5px;color:#5f6368'>" + rt.desc + (probe.version ? " · " + esc(probe.version) : "") + "</div></div>" +
+        (probe.found ? "<div class='pill' style='color:" + GREEN_D + ";background:" + GREEN_BG + "'>installed</div>" : "");
+      card.appendChild(top);
+      var row = css(E("div"), { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
+      var code = E("code", "code", esc(rt.cmd));
+      css(code, { flex: "1", minWidth: "200px" });
+      row.appendChild(code);
+      var cp = B("", "Copy", function () { copyText(rt.cmd, "Copied — paste it in a terminal"); });
+      css(cp, { border: "2px solid #dadce0", borderRadius: "12px", background: "#ffffff", color: BLUE, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 14px" });
+      row.appendChild(cp);
+      var a = E("a", null, "Setup guide →");
+      a.href = rt.url; a.target = "_blank";
+      css(a, { fontSize: "13.5px", padding: "8px 4px" });
+      row.appendChild(a);
+      card.appendChild(row);
+      stack.appendChild(card);
+    });
+    d.appendChild(stack);
+    var foot = css(E("div", "hint", "After installing, tap the button below — agentina re-checks your machine. API keys stay in your shell environment, never in agentina's files."), { marginTop: "16px" });
+    d.appendChild(foot);
+    var re = B("btn btn-white", "I installed one — check again", recheckEnv);
+    css(re, { marginTop: "16px" });
+    d.appendChild(re);
+    return d;
+  };
+
+  // ============ ACTIVITY ============
+  function humanizeAudit(e) {
+    var names = partyNames();
+    var who = e.partyId && e.partyId !== "local" ? (names[e.partyId] || "someone you removed") : null;
+    var agent = e.agentId || "agent";
+    var denied = e.decision === "denied";
+    var detail = e.detail || "";
+    var kind = e.kind;
+    if (kind === "pair") {
+      if (denied) return "Blocked: an invalid or expired invite link";
+      if (detail.indexOf("joined") === 0) return "You connected with " + (who || "them") + " from their invite";
+      return (who || "Someone") + " joined from your invite link";
+    }
+    if (kind === "ping") return who ? who + " checked the connection — it answered" : "Connection test";
+    if (kind === "task") {
+      if (denied) {
+        if (e.reason === "scope-denied") return "Blocked: " + (who || "a request") + " tried to go outside what you shared";
+        if (e.reason === "no-grant" || e.reason === "agent-not-granted") return "Blocked: " + (who || "someone") + " tried to use " + agent + " — nothing is shared with them";
+        if (e.reason === "unknown-agent") return "Blocked: a request for an agent that doesn't exist";
+        return "Blocked: " + (who || "a request") + " — " + (detail || e.reason || "denied");
+      }
+      if (who) return who + " asked your " + agent + (detail ? ": “" + detail + "”" : "");
+      return "Your " + agent + " was used here" + (detail ? " — " + detail : "");
+    }
+    if (kind === "grant-create") {
+      if (e.reason === "proposed") return (who || "Someone") + " asked for access — approve it from your side or ignore it";
+      return "You shared with " + (who || "a contact") + (detail ? " — " + detail : "");
+    }
+    if (kind === "grant-revoke") return "You stopped sharing with " + (who || "a contact");
+    if (kind === "session-open") return "You shared something temporary with " + (who || "a contact") + " — it self-destructs";
+    if (kind === "session-close") return "A temporary share ended" + (detail ? " (" + detail + ")" : "");
+    if (kind === "auth-denied") return "Blocked: a request that isn't from one of your people";
+    return kind + (detail ? " — " + detail : "");
+  }
+  SCREENS.activity = function () {
+    var d = screenRoot("activity");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Activity"));
+    d.appendChild(E("div", "sub2", "Everything that happened — both sides keep this log, including denials."));
+    var entries = ((S.status && S.status.audit) || []).slice().reverse();
+    if (!entries.length) {
+      d.appendChild(css(E("div", "hint", "Nothing yet — the first connection, share, or ask lands here."), { textAlign: "center", marginTop: "24px" }));
+      return d;
+    }
+    var list = E("div", "stack-sm");
+    entries.forEach(function (e) {
+      var denied = e.decision === "denied";
+      var row = E("div");
+      css(row, { display: "flex", alignItems: "center", gap: "14px", background: denied ? RED_BG : "#ffffff", border: "2px solid " + (denied ? "#F9C1C1" : "#e8eaed"), borderRadius: "16px", padding: "14px 16px" });
+      var icon = denied
+        ? "<svg width='16' height='16' viewBox='0 0 24 24' fill='none'><path d='M6 6l12 12M18 6L6 18' stroke='#ffffff' stroke-width='3' stroke-linecap='round'></path></svg>"
+        : "<svg width='16' height='16' viewBox='0 0 24 24' fill='none'><path d='M4 12.5l5 5L20 6.5' stroke='#ffffff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'></path></svg>";
+      row.innerHTML =
+        "<div style='width:36px;height:36px;border-radius:50%;background:" + (denied ? RED : GREEN) + ";display:flex;align-items:center;justify-content:center;flex:none'>" + icon + "</div>" +
+        "<div style='flex:1;min-width:0'><div style='font-size:15.5px;font-weight:600;line-height:1.4'>" + esc(humanizeAudit(e)) + "</div>" +
+        "<div style='font-size:13px;color:#9aa0a6;margin-top:2px'>" + esc(e.ts ? fmtTime(e.ts) : "") + "</div></div>";
+      list.appendChild(row);
+    });
+    d.appendChild(list);
+    return d;
+  };
+
+  // ============ ADVANCED ============
+  var CHANNELS = [
+    { id: "telegram", name: "Telegram", glyph: "TG", bg: BLUE_BG, fg: BLUE, ready: true,
+      tagline: "DM the bot, or @mention an agent in a group",
+      steps: [
+        { n: "1", title: "Create a bot", body: "Message @BotFather on Telegram and send /newbot. Pick any name — this bot is yours alone." },
+        { n: "2", title: "Copy the token", body: "BotFather replies with a token. Treat it like a password — it never goes in a file." },
+        { n: "3", title: "Put it in an environment variable", body: "In the terminal where the node runs:", code: "export TG_BOT_TOKEN=110201543:AAHdq…" },
+        { n: "4", title: "Save the variable name below", body: "agentina reads the token from the variable at startup — it only stores the name." },
+        { n: "5", title: "Talk to it", body: "DM the bot directly, or add it to a group and write @files read brief.txt. Mentions can cross the trust boundary — the other side's rules still decide." }
+      ] },
+    { id: "gitlab", name: "GitLab", glyph: "GL", bg: AMBER_BG, fg: AMBER, ready: true,
+      tagline: "Answers @mentions in issue and MR comments",
+      steps: [
+        { n: "1", title: "Create a bot user", body: "In your GitLab, add a user like agentina-bot and give it access to the project." },
+        { n: "2", title: "Create its token", body: "Signed in as the bot: Settings → Access tokens, scope “api”. Then in the node's terminal:", code: "export GL_BOT_TOKEN=glpat-…" },
+        { n: "3", title: "Add a webhook", body: "Project → Settings → Webhooks. Tick “Comments (note events)” and point it at:", code: "https://<your-node>/channels/gitlab/webhook" },
+        { n: "4", title: "Set the webhook secret", body: "Give the webhook a secret token and export it too:", code: "export GL_HOOK_SECRET=…" },
+        { n: "5", title: "Mention it", body: "Write @assistant summarize this MR in any issue or MR comment — the bot replies right in the thread." }
+      ] },
+    { id: "whatsapp", name: "WhatsApp", glyph: "WA", bg: GREEN_BG, fg: GREEN_D, ready: false,
+      tagline: "Message an agent like any contact",
+      steps: [
+        { n: "1", title: "Get a Cloud API number", body: "In Meta's WhatsApp Business Cloud API, create an app and note the phone number ID." },
+        { n: "2", title: "Export the token", body: "Generate a permanent access token and export it:", code: "export WA_TOKEN=…" },
+        { n: "3", title: "Point the webhook here", body: "Set the app's webhook for messages to:", code: "https://<your-node>/channels/whatsapp/webhook" },
+        { n: "4", title: "Message it", body: "Text the number like a contact: @assistant status of the books?" }
+      ] },
+    { id: "teams", name: "Microsoft Teams", glyph: "MT", bg: BLUE_BG, fg: BLUE, ready: false,
+      tagline: "@mention an agent in a channel or chat",
+      steps: [
+        { n: "1", title: "Register a bot", body: "In Azure Bot Service, create a bot registration and note its App ID and secret." },
+        { n: "2", title: "Export the credentials", body: "In the node's terminal:", code: "export TEAMS_APP_ID=… TEAMS_APP_SECRET=…" },
+        { n: "3", title: "Point the messaging endpoint here", body: "Set the bot's endpoint to:", code: "https://<your-node>/channels/teams/messages" },
+        { n: "4", title: "Add it to a team", body: "Sideload the app package, then @assistant summarize this thread in any channel." }
+      ] },
+    { id: "discord", name: "Discord", glyph: "DC", bg: BLUE_BG, fg: BLUE, ready: false,
+      tagline: "@mention an agent in any server it's invited to",
+      steps: [
+        { n: "1", title: "Create an application", body: "discord.com/developers → New Application → Bot. Copy the bot token:", code: "export DISCORD_BOT_TOKEN=…" },
+        { n: "2", title: "Invite it to your server", body: "OAuth2 → URL Generator: scope “bot”, permissions “Read Messages” and “Send Messages”. Open the generated link." },
+        { n: "3", title: "Mention it", body: "In any channel the bot can see: @files read brief.txt. Replies land in the same channel." }
+      ] },
+    { id: "github", name: "GitHub", glyph: "GH", bg: "#f1f3f4", fg: "#202124", ready: false,
+      tagline: "Answers @mentions in issues and pull requests",
+      steps: [
+        { n: "1", title: "Create a fine-grained token", body: "GitHub → Settings → Developer settings → Fine-grained tokens. Scope it to the one repo, with Issues and Pull requests read/write. Then:", code: "export GH_BOT_TOKEN=github_pat_…" },
+        { n: "2", title: "Add a webhook", body: "Repo → Settings → Webhooks, event “Issue comments”, pointed at:", code: "https://<your-node>/channels/github/webhook" },
+        { n: "3", title: "Set the webhook secret", body: "Use the webhook's secret field and export it:", code: "export GH_HOOK_SECRET=…" },
+        { n: "4", title: "Mention it", body: "Write @assistant explain this failure in any issue or PR comment." }
+      ] },
+    { id: "slack", name: "Slack", glyph: "SL", bg: RED_BG, fg: RED, ready: false,
+      tagline: "@mention an agent in any channel it's in",
+      steps: [
+        { n: "1", title: "Create a Slack app", body: "api.slack.com/apps → Create New App. Add the bot scopes app_mentions:read and chat:write." },
+        { n: "2", title: "Install & export the token", body: "Install to your workspace, then in the node's terminal:", code: "export SLACK_BOT_TOKEN=xoxb-…" },
+        { n: "3", title: "Enable events", body: "Turn on Event Subscriptions, subscribe to app_mention, and point the request URL at:", code: "https://<your-node>/channels/slack/events" },
+        { n: "4", title: "Mention it", body: "Invite the bot to a channel, then @assistant summarize this thread." }
+      ] }
+  ];
+  function channelPill(chn) {
+    if (!chn.ready) return { text: "Soon", fg: AMBER, bg: AMBER_BG };
+    if (channelRunning(chn.id)) return { text: "On", fg: GREEN_D, bg: GREEN_BG };
+    if (channelConfigured(chn.id)) return { text: "Restart to start", fg: AMBER, bg: AMBER_BG };
+    return { text: "Set up", fg: BLUE, bg: BLUE_BG };
+  }
+  SCREENS.advanced = function () {
+    var d = screenRoot("advanced");
+    d.appendChild(hdr());
+    d.appendChild(css(E("div", "title", "Advanced"), { marginBottom: "24px" }));
+
+    d.appendChild(E("div", "eyebrow", "This node"));
+    var s = S.status || {};
+    var me = s.party || {};
+    var node = E("div", "mono",
+      esc((s.url || "") + " · " + (s.protocol || "")) + "<br>" +
+      "party " + esc(me.id || "") + " · " + esc(me.name || "") + "<br>" +
+      "agents: " + esc(myAgents().map(function (a) { return a.id; }).join(", ") || "none"));
+    css(node, { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "16px", padding: "16px 20px", fontSize: "13px", color: "#5f6368", lineHeight: "1.8", wordBreak: "break-all" });
+    d.appendChild(node);
+
+    var eb2 = E("div", "eyebrow", "Channels — talk to agents from chat");
+    css(eb2, { margin: "28px 0 12px" });
+    d.appendChild(eb2);
+    var rail = E("div", "rail");
+    CHANNELS.forEach(function (chn) {
+      var pill = channelPill(chn);
+      var card = B("card", "", function () { S.channelId = chn.id; go("channel"); });
+      css(card, { flexDirection: "column", gap: "12px", width: "158px", flex: "none", padding: "18px", alignItems: "stretch", scrollSnapAlign: "start" });
+      card.innerHTML =
+        "<div style='display:flex;align-items:center;justify-content:space-between'>" +
+        "<div class='glyph' style='width:44px;height:44px;background:" + chn.bg + ";color:" + chn.fg + ";font-size:14px'>" + chn.glyph + "</div>" +
+        "<div class='pill' style='font-size:11.5px;color:" + pill.fg + ";background:" + pill.bg + "'>" + pill.text + "</div></div>" +
+        "<div style='font-size:16.5px;font-weight:700'>" + chn.name + "</div>" +
+        "<div style='font-size:13px;color:#5f6368;line-height:1.4'>" + chn.tagline + "</div>";
+      rail.appendChild(card);
+    });
+    d.appendChild(rail);
+
+    var eb3 = E("div", "eyebrow", "AI runtimes");
+    css(eb3, { margin: "28px 0 12px" });
+    d.appendChild(eb3);
+    var rt = B("rowcard", "", function () { go("runtimes"); });
+    css(rt, { cursor: "pointer", width: "100%", textAlign: "left" });
+    rt.innerHTML =
+      "<div class='glyph' style='width:44px;height:44px;background:" + BLUE_BG + ";color:" + BLUE + ";font-size:14px'>AI</div>" +
+      "<div style='flex:1'><div style='font-size:16.5px;font-weight:700'>Claude Code, Gemini CLI, Codex…</div>" +
+      "<div style='font-size:13.5px;color:#5f6368'>Install guides and what's on this machine</div></div>" +
+      "<div class='chev' style='font-size:20px'>›</div>";
+    d.appendChild(rt);
+
+    d.appendChild(css(E("div", "hint", "Secrets are read from environment variables, never stored in files."), { marginTop: "20px" }));
+    return d;
+  };
+
+  // ============ CHANNEL DETAIL ============
+  SCREENS.channel = function () {
+    var d = screenRoot("channel");
+    var chn = CHANNELS.filter(function (x) { return x.id === S.channelId; })[0] || CHANNELS[0];
+    d.appendChild(hdr());
+
+    var head = css(E("div"), { display: "flex", alignItems: "center", gap: "16px", margin: "8px 0 8px" });
+    var pill = channelPill(chn);
+    head.innerHTML =
+      "<div class='glyph' style='width:60px;height:60px;border-radius:18px;background:" + chn.bg + ";color:" + chn.fg + ";font-size:18px'>" + chn.glyph + "</div>" +
+      "<div><div style='display:flex;align-items:center;gap:10px'>" +
+      "<div style='font-size:26px;font-weight:800;letter-spacing:-0.5px'>" + chn.name + "</div>" +
+      (chn.ready
+        ? (channelRunning(chn.id) ? "<div class='pill' style='color:" + GREEN_D + ";background:" + GREEN_BG + "'>on</div>"
+          : channelConfigured(chn.id) ? "<div class='pill' style='color:" + AMBER + ";background:" + AMBER_BG + "'>restart to start</div>" : "")
+        : "<div class='pill' style='color:" + AMBER + ";background:" + AMBER_BG + "'>coming soon</div>") +
+      "</div><div style='font-size:15px;color:#5f6368;margin-top:2px'>" + chn.tagline + "</div></div>";
+    void pill;
+    d.appendChild(head);
+
+    d.appendChild(css(E("div", null, "Mention an agent where you already chat and it answers — even across the trust boundary. The other side's rules still apply: a denial comes back as the reply, honestly, and lands in both activity logs."), { fontSize: "15.5px", color: "#5f6368", lineHeight: "1.55", margin: "12px 0 24px" }));
+
+    var steps = E("div", "stack");
+    chn.steps.forEach(function (st2) {
+      var row = css(E("div"), { display: "flex", gap: "16px", background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "18px 20px" });
+      row.innerHTML =
+        "<div style='width:36px;height:36px;border-radius:50%;background:" + BLUE_BG + ";color:" + BLUE + ";display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex:none'>" + st2.n + "</div>" +
+        "<div style='flex:1;min-width:0'><div style='font-size:16.5px;font-weight:700;margin-bottom:4px'>" + esc(st2.title) + "</div>" +
+        "<div style='font-size:14.5px;color:#5f6368;line-height:1.55'>" + esc(st2.body) + "</div>" +
+        (st2.code ? "<code class='code' style='display:block;margin-top:8px'>" + esc(st2.code) + "</code>" : "") + "</div>";
+      steps.appendChild(row);
+    });
+    d.appendChild(steps);
+
+    if (chn.id === "telegram") {
+      var box = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
+      box.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
+      var row2 = css(E("div"), { display: "flex", gap: "10px" });
+      var inp = E("input", "input");
+      css(inp, { flex: "1", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "0" });
+      inp.placeholder = "token env var, e.g. TG_BOT_TOKEN";
+      var cfg = (S.status && S.status.channelsConfig) || {};
+      inp.value = S.form.tgEnv != null ? S.form.tgEnv : ((cfg.telegram && cfg.telegram.tokenEnv) || "TG_BOT_TOKEN");
+      inp.oninput = function () { S.form.tgEnv = inp.value; };
+      var save = B("", "Save", function () {
+        var v = inp.value.trim();
+        if (!v) { toast("Name the env var holding the bot token"); return; }
+        api("POST", "/channels", { kind: "telegram", tokenEnv: v }).then(function () {
+          toast("Saved — restart the node to start Telegram");
+          refresh();
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(save, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+      row2.appendChild(inp); row2.appendChild(save);
+      box.appendChild(row2);
+      box.appendChild(css(E("div", "hint", "No public IP needed — Telegram is long-polled. Restart the node after saving."), { marginTop: "10px" }));
+      d.appendChild(box);
+    }
+
+    if (chn.id === "gitlab") {
+      var box2 = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
+      box2.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
+      var row3 = css(E("div"), { display: "flex", gap: "10px", flexWrap: "wrap" });
+      var cfg2 = (S.status && S.status.channelsConfig) || {};
+      var host = E("input", "input");
+      css(host, { flex: "2", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "160px" });
+      host.placeholder = "host, e.g. https://gitlab.example.com";
+      host.value = S.form.glHost != null ? S.form.glHost : ((cfg2.gitlab && cfg2.gitlab.host) || "");
+      host.oninput = function () { S.form.glHost = host.value; };
+      var envv = E("input", "input");
+      css(envv, { flex: "1", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "120px" });
+      envv.placeholder = "token env var";
+      envv.value = S.form.glEnv != null ? S.form.glEnv : ((cfg2.gitlab && cfg2.gitlab.tokenEnv) || "");
+      envv.oninput = function () { S.form.glEnv = envv.value; };
+      var save2 = B("", "Save", function () {
+        var hv = host.value.trim(), ev = envv.value.trim();
+        if (!hv || !ev) { toast("GitLab needs a host and a token env var"); return; }
+        api("POST", "/channels", { kind: "gitlab", host: hv, tokenEnv: ev }).then(function () {
+          toast("Saved — restart the node to start GitLab");
+          refresh();
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(save2, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+      row3.appendChild(host); row3.appendChild(envv); row3.appendChild(save2);
+      box2.appendChild(row3);
+      box2.appendChild(css(E("div", "hint", "Restart the node after saving. The webhook secret goes in its own env var too."), { marginTop: "10px" }));
+      d.appendChild(box2);
+    }
+
+    if (!chn.ready) {
+      var soon = E("div", null, "This channel ships soon — every adapter shares the same 4-method contract, so setup will look exactly like the steps above.");
+      css(soon, { background: AMBER_BG, border: "2px solid #FFE08A", borderRadius: "16px", padding: "16px 18px", marginTop: "20px", fontSize: "14.5px", color: AMBER, fontWeight: "600", lineHeight: "1.5" });
+      d.appendChild(soon);
+    }
+    return d;
+  };
+
+  // ============ ACCOUNT ============
+  function openAccount() {
+    var me = (S.status && S.status.party) || {};
+    var profile = (S.status && S.status.profile) || {};
+    var host = String((S.status && S.status.url) || "");
+    host = host.replace("http://", "").replace("https://", "");
+    var colon = host.lastIndexOf(":");
+    if (colon > 0) host = host.slice(0, colon);
+    S.form.acctName = me.name || "";
+    S.form.acctRole = profile.role || "";
+    S.form.acctColor = profile.color || BLUE;
+    S.form.acctBind = host === "127.0.0.1" ? "" : host;
+    go("account");
+  }
+  SCREENS.account = function () {
+    var d = screenRoot("account");
+    var me = (S.status && S.status.party) || {};
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Your account"));
+    d.appendChild(E("div", "sub2", "This is how you show up to the people you connect with — nothing here leaves your machine."));
+
+    var avRow = css(E("div"), { display: "flex", alignItems: "center", gap: "18px", marginBottom: "28px" });
+    var av = E("div", "avatar", esc(initialOf(S.form.acctName)));
+    av.id = "acct-av";
+    css(av, { width: "76px", height: "76px", background: S.form.acctColor, fontSize: "32px", fontWeight: "800" });
+    avRow.appendChild(av);
+    var colWrap = css(E("div"), { flex: "1" });
+    colWrap.appendChild(E("div", "eyebrow", "Avatar color"));
+    var swatches = css(E("div"), { display: "flex", gap: "10px" });
+    AVATARS.forEach(function (hex) {
+      var b = B("", "", function () {
+        S.form.acctColor = hex;
+        av.style.background = hex;
+        Array.prototype.forEach.call(swatches.children, function (x) {
+          x.style.borderColor = x.getAttribute("data-hex") === hex ? "#202124" : "#ffffff";
+        });
+      });
+      b.setAttribute("data-hex", hex);
+      css(b, { width: "36px", height: "36px", borderRadius: "50%", background: hex, cursor: "pointer", border: "3px solid " + (S.form.acctColor === hex ? "#202124" : "#ffffff"), padding: "0" });
+      swatches.appendChild(b);
+    });
+    colWrap.appendChild(swatches);
+    avRow.appendChild(colWrap);
+    d.appendChild(avRow);
+
+    d.appendChild(E("div", "eyebrow", "Display name"));
+    var name = E("input", "input");
+    css(name, { height: "54px", marginBottom: "22px" });
+    name.placeholder = "Your name";
+    name.value = S.form.acctName;
+    name.oninput = function () {
+      S.form.acctName = name.value;
+      av.textContent = initialOf(name.value);
+    };
+    d.appendChild(name);
+
+    d.appendChild(E("div", "eyebrow", "Role / title <span style='text-transform:none;font-weight:600;color:#c0c4c9'>— optional</span>"));
+    var role = E("input", "input");
+    css(role, { height: "54px", marginBottom: "22px" });
+    role.placeholder = "e.g. Freelance designer";
+    role.value = S.form.acctRole;
+    role.oninput = function () { S.form.acctRole = role.value; };
+    d.appendChild(role);
+
+    d.appendChild(E("div", "eyebrow", "Network address"));
+    var bind = E("input", "input mono");
+    css(bind, { height: "54px" });
+    var e = env();
+    var tsIp = e && e.network && e.network.tailscale && e.network.tailscale.ip;
+    bind.placeholder = tsIp || "100.84.12.7";
+    bind.value = S.form.acctBind;
+    bind.oninput = function () { S.form.acctBind = bind.value; };
+    d.appendChild(bind);
+    d.appendChild(css(E("div", "hint",
+      "The address others reach you on — your Tailscale / WireGuard IP, or a WAN address. New invites embed it; restart the node (with <span class='mono' style='font-size:12.5px'>--bind</span> this address) so it also listens there. Party id <span class='mono' style='font-size:12.5px'>" + esc(me.id || "") + "</span> stays fixed."
+    ), { margin: "8px 0 20px" }));
+
+    var help = B("", "", function () { go("networkHelp"); });
+    css(help, { display: "flex", alignItems: "center", gap: "12px", width: "100%", background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "16px", padding: "14px 16px", cursor: "pointer", textAlign: "left", marginBottom: "28px" });
+    help.innerHTML =
+      "<div style='width:34px;height:34px;border-radius:50%;background:" + BLUE + ";color:#ffffff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;flex:none'>?</div>" +
+      "<div style='flex:1;min-width:0'><div style='font-size:15px;font-weight:700;color:" + BLUE_D + "'>New to this? What's a network address?</div>" +
+      "<div style='font-size:13px;color:#5f6368'>Plain-language guide — pick the free option and get connected</div></div>" +
+      "<div style='color:#A9CBFF;font-size:20px;font-weight:700'>›</div>";
+    d.appendChild(help);
+
+    var save = B("btn btn-blue", "Save", function () {
+      if (!(S.form.acctName || "").trim()) { toast("Give yourself a name first"); return; }
+      save.disabled = true;
+      api("POST", "/account", {
+        name: S.form.acctName.trim(),
+        role: (S.form.acctRole || "").trim(),
+        color: S.form.acctColor,
+        url: (S.form.acctBind || "").trim() || undefined
+      }).then(function () {
+        toast("Saved — this is how you show up now");
+        refresh().then(back);
+      })["catch"](function (e2) { save.disabled = false; toast(e2.message); });
+    });
+    d.appendChild(save);
+    return d;
+  };
+
+  // ============ NETWORK HELP ============
+  SCREENS.networkHelp = function () {
+    var d = screenRoot("networkHelp");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Getting connected"));
+    d.appendChild(css(E("div", "sub2", "agentina works by letting your computer and one other person's computer talk directly — no company's servers sit in the middle. For that, each computer needs an <b>address</b> the other can reach, like a phone number for machines."), { marginBottom: "24px" }));
+
+    var why = css(E("div"), { background: GREEN_BG, border: "2px solid #A9E8C9", borderRadius: "20px", padding: "20px", marginBottom: "24px" });
+    why.innerHTML =
+      "<div style='font-size:17px;font-weight:800;margin-bottom:8px'>Why not just use the internet directly?</div>" +
+      "<div style='font-size:15px;color:#3c5a4e;line-height:1.55'>Home internet usually hides your computer behind the router, so nobody can reach it from outside — which is good for safety. A <b>private network</b> gives your machine a stable address that only the people you invite can use. Think of it as a private hallway between two houses, not a public street.</div>";
+    d.appendChild(why);
+
+    d.appendChild(E("div", "eyebrow", "Pick one way to connect"));
+    var stack = E("div", "stack");
+
+    var ts = css(E("div"), { background: "#ffffff", border: "2px solid #A9CBFF", borderRadius: "20px", padding: "20px" });
+    var e = env();
+    var tsFound = e && e.network && e.network.tailscale && e.network.tailscale.found;
+    var tsIp = e && e.network && e.network.tailscale && e.network.tailscale.ip;
+    ts.innerHTML =
+      "<div style='display:flex;align-items:center;gap:12px;margin-bottom:10px'>" +
+      "<div class='glyph' style='width:44px;height:44px;background:" + BLUE_BG + ";color:" + BLUE + ";font-size:13px'>T</div>" +
+      "<div style='flex:1'><div style='font-size:17px;font-weight:800'>Tailscale <span class='pill' style='color:" + GREEN_D + ";background:" + GREEN_BG + ";font-size:12.5px;padding:3px 10px;margin-left:4px'>easiest · free</span></div>" +
+      "<div style='font-size:13.5px;color:#5f6368'>Best if you're not sure — it just works</div></div></div>" +
+      "<div style='font-size:14.5px;color:#5f6368;line-height:1.6'>1. Install Tailscale on both computers and sign in (Google or email — no card).<br>2. It gives each machine an address that looks like <span class='mono' style='font-size:12.5px;color:#202124'>100.84.12.7</span>.<br>3. Paste that address into the box on the previous screen. Done.</div>" +
+      (tsFound
+        ? "<div style='font-size:14px;font-weight:700;color:" + GREEN_D + ";margin-top:12px'>Tailscale is on this machine" + (tsIp ? " — your address is <span class='mono' style='font-size:12.5px'>" + esc(tsIp) + "</span>" : "") + "</div>"
+        : "<a href='https://tailscale.com/download' target='_blank' style='display:inline-block;font-size:14px;margin-top:12px'>Get Tailscale →</a>");
+    stack.appendChild(ts);
+
+    var wg = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px" });
+    wg.innerHTML =
+      "<div style='display:flex;align-items:center;gap:12px;margin-bottom:10px'>" +
+      "<div class='glyph' style='width:44px;height:44px;background:" + AMBER_BG + ";color:" + AMBER + ";font-size:13px'>W</div>" +
+      "<div style='flex:1'><div style='font-size:17px;font-weight:800'>WireGuard <span class='pill' style='color:" + AMBER + ";background:" + AMBER_BG + ";font-size:12.5px;padding:3px 10px;margin-left:4px'>free · more setup</span></div>" +
+      "<div style='font-size:13.5px;color:#5f6368'>If you or a techy friend already run one</div></div></div>" +
+      "<div style='font-size:14.5px;color:#5f6368;line-height:1.6'>Same idea as Tailscale, but you configure the private network yourself. Once connected, each machine has a private address — paste yours into the box. headscale (self-hosted) works too.</div>" +
+      "<a href='https://www.wireguard.com/install/' target='_blank' style='display:inline-block;font-size:14px;margin-top:12px'>About WireGuard →</a>";
+    stack.appendChild(wg);
+
+    var wan = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px" });
+    wan.innerHTML =
+      "<div style='display:flex;align-items:center;gap:12px;margin-bottom:10px'>" +
+      "<div class='glyph' style='width:44px;height:44px;background:" + RED_BG + ";color:" + RED + ";font-size:13px'>IP</div>" +
+      "<div style='flex:1'><div style='font-size:17px;font-weight:800'>A public (WAN) address <span class='pill' style='color:" + RED + ";background:" + RED_BG + ";font-size:12.5px;padding:3px 10px;margin-left:4px'>advanced</span></div>" +
+      "<div style='font-size:13.5px;color:#5f6368'>Only if you know your way around a router</div></div></div>" +
+      "<div style='font-size:14.5px;color:#5f6368;line-height:1.6'>If your machine already has a public address on the internet (a server, or a home router set up to forward a port), you can use that directly — with TLS. Most people should pick Tailscale instead.</div>";
+    stack.appendChild(wan);
+    d.appendChild(stack);
+
+    // The concluding step — every option above ends here.
+    var conn = connectivity();
+    var last = css(E("div"), { background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "20px", padding: "20px", marginTop: "24px" });
+    last.appendChild(css(E("div", null, "Last step — tell agentina your address"), { fontSize: "17px", fontWeight: "800", marginBottom: "8px" }));
+    last.appendChild(css(E("div", null, "Once you have an address, restart agentina with it. New invite links then carry it automatically."), { fontSize: "14.5px", color: "#3c4a5f", lineHeight: "1.55", marginBottom: "10px" }));
+    var row = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" });
+    var code = E("code", "mono", esc(conn.cmd));
+    css(code, { fontSize: "12.5px", background: "#ffffff", border: "1px solid #A9CBFF", borderRadius: "8px", padding: "6px 10px" });
+    row.appendChild(code);
+    var cp = B("", "Copy", function () { copyText(conn.cmd, "Copied — run it where agentina lives"); });
+    css(cp, { border: "none", background: "none", color: BLUE_D, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
+    row.appendChild(cp);
+    last.appendChild(row);
+    var acct = B("", "Or edit the address in your account settings →", openAccount);
+    css(acct, { border: "none", background: "none", color: BLUE_D, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px 6px 0 0", marginTop: "4px" });
+    last.appendChild(acct);
+    d.appendChild(last);
+
+    d.appendChild(css(E("div", "hint", "Whichever you pick, agentina only needs “an address that answers.” Nothing you do here shares any files — that always happens later, one share at a time."), { marginTop: "20px" }));
+    return d;
+  };
 
   // ---------- poll loop ----------
   var lastPeerLoad = 0;
   function refresh() {
     return api("GET", "/status").then(function (s) {
-      render(s);
-      // refresh the selected peer's grants/shares every few cycles
-      if (state.selected && Date.now() - lastPeerLoad > 7000) {
-        lastPeerLoad = Date.now();
-        loadPeer(state.selected);
+      S.status = s;
+      // Invite screen: detect the join the moment it lands.
+      if (cur() === "invite" && (s.peers || []).length > S.inviteBaseline) {
+        var newest = s.peers[s.peers.length - 1];
+        toast(newest.peer + " joined — you're connected");
+        S.inviteLink = null;
+        goHome();
+        return;
       }
-    }).catch(function () { /* node restarting */ });
+      // Keep grant counts for the home cards fresh (cheap, small mesh).
+      if (Date.now() - lastPeerLoad > 7000) {
+        lastPeerLoad = Date.now();
+        (s.peers || []).forEach(function (p) { loadPeer(p.peer, p.peer === S.contact); });
+      }
+      // Only re-render on MEANINGFUL change — mesh health checks stamp
+      // volatile fields (lastCheck) every cycle; hashing them would
+      // rebuild the DOM every poll and make the page feel haunted.
+      var stablePeers = (s.peers || []).map(function (p) {
+        return { peer: p.peer, healthy: p.healthy, partyId: p.partyId, skills: p.skills };
+      });
+      var hash = JSON.stringify([
+        stablePeers, s.agents, s.audit, s.grants && s.grants.length,
+        s.environment && s.environment.ai, s.channels, s.channelsConfig,
+        s.party, s.profile, s.url
+      ]);
+      if (hash !== S.lastHash) {
+        var first = !S.lastHash;
+        S.lastHash = hash;
+        if (first) render(); else maybeRender();
+      }
+    })["catch"](function () { /* node restarting — keep the last view */ });
   }
-  $("sh-kind").onchange();
   refresh();
   setInterval(refresh, 2500);
 })();

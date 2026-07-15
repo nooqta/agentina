@@ -26,8 +26,17 @@ describe("console page integrity", () => {
 
   it("core surfaces are present", () => {
     for (const marker of [
-      'id="onboarding"', 'id="app"', 'id="wizard"', 'id="myagents"',
-      'id="ai-banner"', 'id="mode-toggle"', "pp-drop", "set up a collaboration",
+      // shell
+      'id="col"', 'id="toast"',
+      // every screen of the v3 design
+      "SCREENS.onboarding", "SCREENS.invite", "SCREENS.join", "SCREENS.home",
+      "SCREENS.contact", "SCREENS.ask", "SCREENS.share", "SCREENS.agents",
+      "SCREENS.agentEdit", "SCREENS.agentNew", "SCREENS.runtimes",
+      "SCREENS.activity", "SCREENS.advanced", "SCREENS.channel",
+      "SCREENS.account", "SCREENS.networkHelp",
+      // key copy and wiring
+      "Ask their agents", "Share something", "agentina://join/",
+      "/environment/refresh", "/agentina/v1",
     ]) {
       expect(CONSOLE_HTML, marker).toContain(marker)
     }
