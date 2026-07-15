@@ -27,7 +27,7 @@ Every node is owned by a **party**. Every non-loopback request is **attributed t
 
 agentina speaks HTTP and treats the network as untrusted-by-default in its *authorization* model, but **transport encryption is delegated to the network layer**:
 
-- **Recommended**: run over a WireGuard-based overlay (Tailscale free plan, headscale, plain WireGuard) — encrypted, peer-to-peer, no ports opened. See [docs/tutorials/00-install-and-network.md](docs/tutorials/00-install-and-network.md).
+- **Recommended**: run over a WireGuard-based overlay (Tailscale free plan, headscale, plain WireGuard) — encrypted, peer-to-peer, no ports opened. See [docs/tutorials/02-connect-two-people.md](docs/tutorials/02-connect-two-people.md).
 - **Never** bind a node to a public interface with plain HTTP. If you must cross the open internet, terminate TLS in front (Caddy/nginx).
 - Default bind is `127.0.0.1` — a fresh node exposes nothing until the operator chooses `--bind`.
 

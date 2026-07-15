@@ -2,12 +2,12 @@
 
 **Hook (0:00–0:20).** "Every freelance project starts the same way: 'can you send me the brief?' — and forty emails later nobody knows which version is real. Here's the version where nobody sends anything, ever."
 
-**Cast.** Amal (freelancer) and Badis (client), each on their own machine.
+**Cast.** Amal (freelancer) and Badis (client), each on their own machine. *(This is episodes 02–04 as one story.)*
 
-1. **Pair** (0:20) — Badis: *Create invite link* → sends it over WhatsApp → Amal pastes → connected. "That link was one-time; it's dead now."
-2. **The wizard** (1:00) — Amal clicks *set up a collaboration* → picks **Freelancer ↔ Client** → "I'm the freelancer". Two prefilled steps appear: create your project assistant (folder picked with the OS-style picker, no typing paths), share it with the client. Two *Do it* clicks. Camera note: **no provider, no model, no jargon anywhere on screen.**
-3. **Badis's mirror** (2:00) — same wizard, "I'm the client", one step: share the project folder, read-only. Done screen tells him Amal now sees it.
-4. **The payoff** (2:40) — Badis, in *Ask them*: clicks the 🤖 assistant chip → *"where are we on the checkout redesign?"* → Amal's AI answers from her actual work files, on her machine. Amal asks Badis's 📁 share for the brief. Neither sent a file.
-5. **The wow** (3:40) — Badis's Activity tab: every question the client asked, every file the freelancer read — attributed, timestamped, on both machines. "This is the contract, enforced."
+1. **Pair** (0:20) — Badis: *Invite someone* → sends the link over WhatsApp → Amal: *I have an invite link* → paste → connected. "That link was one-time; it's dead now."
+2. **Amal's side — an assistant for this client** (1:00) — *My agents* → *+ New agent*: name `assistant`, folder = the project folder (picked from suggestions, no typing paths), purpose *"answer questions about the Acme project"*. Then contact → *Share something* → **One of my agents** → look only → until I stop it. Two short flows, zero jargon on screen.
+3. **Badis's side — the brief** (2:00) — contact → *Share something* → **A folder** → `project-docs` → look only → 1 week. The confirm card spells out everything Amal gets; the done screen says it appears on her side right away.
+4. **The payoff** (2:40) — Badis, in *Ask their agents*: picks the `assistant` chip → *"where are we on the checkout redesign?"* → Amal's AI answers from her actual work files, on her machine. Amal asks Badis's folder chip for `read brief.txt`. Neither sent a file.
+5. **The wow** (3:40) — Badis's Activity: every question the client asked, every file the freelancer read — attributed, timestamped, on both machines. "This is the contract, enforced."
 
-**Recap.** Invite → pick the scenario → two clicks each → work flows, files don't. *(State-aware beat: if Claude isn't installed, step 2 shows the one-command banner — film the install + "check again" flip.)*
+**Recap.** Invite → an agent + a folder, shared in a few taps each → work flows, files don't. *(State-aware beat: if Claude isn't installed, the home banner shows the one command — film the install + "I installed it" flip.)*

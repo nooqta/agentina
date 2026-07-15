@@ -50,7 +50,7 @@ Built on the Linux Foundation's [A2A protocol](https://github.com/a2aproject/A2A
 
 ## How it works
 
-> **First time? Start with [Tutorial 00 — install + connect two machines, free](docs/tutorials/00-install-and-network.md)** (Tailscale free plan / headscale / WireGuard — agentina only needs "an IP that answers"). The security model is documented in [SECURITY.md](SECURITY.md).
+> **First time? Follow [the playlist](docs/tutorials/README.md)** — eight short episodes from install to the full security model, each one filmable as a YouTube tutorial. Start solo with [episode 01 — your own AI assistant](docs/tutorials/01-your-own-assistant.md), or jump to [episode 02 — connect two people](docs/tutorials/02-connect-two-people.md). The security model is documented in [SECURITY.md](SECURITY.md).
 
 ```bash
 # Party A (the freelancer) — bind your overlay-network IP so B can reach you
@@ -80,18 +80,27 @@ Mention an agent in a comment or a chat and it answers — including agents on t
 ```bash
 agentina channel telegram --token-env TG_BOT_TOKEN          # DM the bot, or @files read brief.txt
 agentina channel whatsapp --token-env WA_TOKEN --phone-id 1234567890 --verify-env WA_VERIFY
+agentina channel discord --token-env DISCORD_BOT_TOKEN
+agentina channel slack --token-env SLACK_BOT_TOKEN --secret-env SLACK_SIGNING_SECRET
 agentina channel github --token-env GH_BOT_TOKEN --secret-env GH_HOOK_SECRET
 agentina channel gitlab --host https://gitlab.example.com --token-env GL_BOT_TOKEN --secret-env GL_HOOK_SECRET
-# webhooks: <node-url>/channels/{whatsapp,github,gitlab}/webhook — see docs/tutorials/04-channels.md
+# each connection gets its own webhook address — the console shows it with a Copy button
+# full walkthroughs: docs/tutorials/05-channels.md (or the console's built-in guides)
 ```
 
 | Channel | Status | How it listens |
 |---|---|---|
 | Telegram | ✓ | Bot API long-poll — no public IP needed |
 | WhatsApp | ✓ | Meta Cloud API webhook, replies as your business number |
+| Discord | ✓ | Gateway websocket (outbound, Node 22+) — no public IP needed |
+| Slack | ✓ | Events API webhook (signed, replay-guarded), replies in-thread |
 | GitHub | ✓ | webhook on issue/PR comments (HMAC-verified), replies as the bot |
 | GitLab | ✓ | webhook on issue/MR comments, replies as the bot |
-| Discord · Slack · Teams · Trello · Jira | planned | same `ChannelAdapter` contract — each is one small file |
+| Teams · Trello · Jira | planned | same `ChannelAdapter` contract — each is one small file |
+
+Channels start the moment you save them in the console — paste the token in the form (stored owner-only on your machine; env vars override) and mention an agent. No restart, no terminal.
+
+**Per agent, per channel.** A connection can be bound to one agent (`--agent bookkeeper`, or "Who answers here?" in the console): that bot or number becomes the agent's own face — message it like a person, no @mention needed. Several connections of the same kind coexist (each gets its own webhook address), so agentina is useful **solo**: your own agents, in your own chat apps, before any second party is involved.
 
 Every adapter implements the same 4-method contract (`start`, `stop`, `sendReply`, + a name); routing, mention resolution, mesh hops, and grant enforcement are shared and never reimplemented per channel.
 
