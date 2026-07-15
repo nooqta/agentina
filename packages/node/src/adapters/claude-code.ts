@@ -32,6 +32,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     model?: string
     baseRoot?: string
     systemPrompt?: string
+    /** Skill files the owner toggled off — kept on disk, not injected. */
+    disabledSkills?: string[]
     /** Launch spec for the agentina MCP bridge — gives the agent
      *  list_peer_shares / ask_peer, i.e. everything its OWNER was
      *  granted by other parties. Omit to run the agent isolated. */
@@ -76,7 +78,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // any SKILL.md / skills/*.md in the agent's WORKSPACE (baseRoot, not
     // the granted cwd — skills belong to the owner, the jail belongs to
     // the grant).
-    const skillsText = loadSkillsText(resolve(this.opts.baseRoot ?? cwd))
+    const skillsText = loadSkillsText(resolve(this.opts.baseRoot ?? cwd), this.opts.disabledSkills)
     const mcpConfig = this.ensureMcpConfig()
     const bridgeHint = mcpConfig
       ? "You have agentina tools: use list_peer_shares to see what other parties currently share with your owner, and ask_peer to use those shares (read shared folders, query shared agents). When asked about something another party shared, CHECK with list_peer_shares before saying you can't see it."

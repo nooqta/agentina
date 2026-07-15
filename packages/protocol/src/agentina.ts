@@ -78,6 +78,9 @@ export interface AdapterSpec {
   /** The agent's personality/instructions — appended to the provider's
    *  system prompt (agentx-style). */
   systemPrompt?: string
+  /** Skill files (by name) the owner switched off in the console —
+   *  they stay on disk but are not injected into the prompt. */
+  disabledSkills?: string[]
 }
 
 /** An agent a party exposes to the mesh. `lifecycle` distinguishes

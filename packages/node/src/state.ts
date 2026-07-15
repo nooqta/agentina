@@ -38,6 +38,9 @@ export interface NodeStateShape {
   channels?: ChannelsConfig
   /** Console presentation mode. Simple hides every technical noun. */
   ui?: { mode: "simple" | "advanced" }
+  /** How the owner shows up to contacts — presentation only, the
+   *  party id stays fixed. */
+  profile?: { role?: string; color?: string }
 }
 
 export function newId(prefix: string): string {

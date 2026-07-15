@@ -15,7 +15,7 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code"
 import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
-import { listSkillNames } from "./skills"
+import { listSkillNames, listSkills } from "./skills"
 import { detectEnvironment, type Environment } from "./environment"
 import { suggestDirs } from "./fs-suggest"
 import { SCENARIOS } from "./scenarios"
@@ -304,6 +304,9 @@ export class AgentinaNode {
     else agents.push(offer)
     this.state.save()
     if (adapter) this.adapters.set(offer.id, adapter)
+    // Replacing an offer must drop the cached declarative adapter, or an
+    // edit (new workspace / prompt / provider) silently keeps the old one.
+    else this.adapters.delete(offer.id)
   }
 
   /**
@@ -467,11 +470,22 @@ export class AgentinaNode {
       .map((g) => {
         const sc = g.scopes[0]
         const session = sessionByGrant.get(g.id)
+        const agentId = g.agentIds[0]
+        // A grant on one of the owner's NAMED agents is an agent share,
+        // whatever scope confines it — only dedicated share-agents
+        // (folder-/server-/repo-…) present as their resource.
+        const isShareAgent = /^(folder|server|repo)-/.test(agentId ?? "")
+        const kind = !isShareAgent
+          ? "agent"
+          : sc?.kind === "fs" ? "folder" : sc?.kind === "ssh" ? "server" : sc?.kind === "repo" ? "repo" : "agent"
+        const value = kind === "agent"
+          ? g.agentIds.join(", ")
+          : sc?.kind === "fs" ? sc.root : sc?.kind === "ssh" ? `${sc.user}@${sc.host}` : sc?.kind === "repo" ? sc.url : g.agentIds.join(", ")
         return {
           id: session ? session.id : g.id,
-          agentId: g.agentIds[0],
-          kind: sc?.kind === "fs" ? "folder" : sc?.kind === "ssh" ? "server" : sc?.kind === "repo" ? "repo" : "agent",
-          value: sc?.kind === "fs" ? sc.root : sc?.kind === "ssh" ? `${sc.user}@${sc.host}` : sc?.kind === "repo" ? sc.url : g.agentIds.join(", "),
+          agentId,
+          kind,
+          value,
           mode: sc && "mode" in sc ? sc.mode : undefined,
           status: session ? session.status : g.status,
           expiresAt: g.expiresAt,
@@ -530,6 +544,7 @@ export class AgentinaNode {
             baseRoot: offer.adapter.baseRoot,
             model: offer.adapter.model,
             systemPrompt: offer.adapter.systemPrompt,
+            disabledSkills: offer.adapter.disabledSkills,
             // The bridge relaunches this same CLI entry as an MCP stdio
             // server pointed at this node — the agent gains its owner's
             // cross-party shares, nothing more.
@@ -807,6 +822,9 @@ export class AgentinaNode {
           baseRoot: raw.baseRoot ?? (body.workspace ? String(body.workspace) : undefined),
           model: raw.model ?? (body.model ? String(body.model) : undefined),
           systemPrompt: raw.systemPrompt ?? (body.systemPrompt ? String(body.systemPrompt) : undefined),
+          disabledSkills: Array.isArray(body.disabledSkills)
+            ? body.disabledSkills.map(String)
+            : raw.disabledSkills,
         }
         const skillNames = adapterSpec.baseRoot ? listSkillNames(adapterSpec.baseRoot) : []
         const offer: AgentOffer = {
@@ -823,6 +841,26 @@ export class AgentinaNode {
         }
         this.addAgent(offer)
         return this.json(res, 201, offer)
+      }
+
+      // How the owner shows up to contacts. Name and presentation are
+      // editable; the party id is identity and never changes.
+      case "POST /agentina/v1/account": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        if (typeof body.name === "string" && body.name.trim()) {
+          this.state.data.party.name = body.name.trim()
+        }
+        const profile = (this.state.data.profile ??= {})
+        if (typeof body.role === "string") profile.role = body.role.trim()
+        if (typeof body.color === "string") profile.color = body.color.trim()
+        if (typeof body.url === "string" && body.url.trim()) {
+          const raw = body.url.trim()
+          // Accept a bare overlay IP/host and normalize to a URL peers can dial.
+          this.state.data.url = /^https?:\/\//.test(raw) ? raw : `http://${raw}:${this.port}`
+        }
+        this.state.save()
+        return this.json(res, 200, { party: this.party, profile, url: this.state.data.url })
       }
 
       case "GET /agentina/v1/scenarios": {
@@ -958,9 +996,12 @@ export class AgentinaNode {
 
       case "GET /agentina/v1/status": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const disabledOf = (a: AgentOffer) => new Set(a.adapter?.disabledSkills ?? [])
         return this.json(res, 200, {
           party: this.party,
+          profile: this.state.data.profile ?? {},
           url: this.state.data.url,
+          bind: this.bind,
           protocol: PROTOCOL_VERSION,
           agents: this.state.data.agents.map((a) => ({
             id: a.id,
@@ -969,10 +1010,17 @@ export class AgentinaNode {
             workspace: a.adapter?.baseRoot,
             model: a.adapter?.model,
             hasPrompt: Boolean(a.adapter?.systemPrompt),
+            prompt: a.adapter?.systemPrompt,
             skillFiles: a.adapter?.baseRoot ? listSkillNames(a.adapter.baseRoot) : [],
+            skills: a.adapter?.baseRoot
+              ? listSkills(a.adapter.baseRoot).map((s) => ({ ...s, on: !disabledOf(a).has(s.file) }))
+              : [],
             session: typeof a.lifecycle === "object" ? a.lifecycle.session : undefined,
           })),
-          peers: this.mesh.directory(),
+          peers: this.mesh.directory().map((p) => ({
+            ...p,
+            partyId: this.state.data.peers.find((x) => x.name === p.peer)?.partyId,
+          })),
           grants: this.grants.list(),
           sessions: this.state.data.sessions,
           channels: this.channels.channelNames(),

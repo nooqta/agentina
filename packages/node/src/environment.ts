@@ -13,12 +13,25 @@ import { join, delimiter } from "node:path"
 // re-runnable via POST /agentina/v1/environment/refresh after the user
 // installs something.
 
+export interface RuntimeProbe {
+  found: boolean
+  version?: string
+  path?: string
+}
+
 export interface Environment {
   platform: NodeJS.Platform
   ai: {
-    claude: { found: boolean; version?: string; path?: string }
+    claude: RuntimeProbe
     /** Copy-paste install command for the console's guide state. */
     installCommand: string
+    /** Every assistant CLI the console knows how to guide — Claude is
+     *  the default runtime; the others surface as install guides. */
+    runtimes: {
+      claude: RuntimeProbe
+      gemini: RuntimeProbe
+      codex: RuntimeProbe
+    }
   }
   network: {
     tailscale: { found: boolean; ip?: string }
@@ -50,9 +63,20 @@ function tryExec(cmd: string, args: string[]): string | undefined {
   }
 }
 
+function probeRuntime(binary: string): RuntimeProbe {
+  const path = findOnPath(binary)
+  const version = path ? tryExec(path, ["--version"]) : undefined
+  return {
+    found: Boolean(path),
+    ...(version ? { version: version.split("\n")[0] } : {}),
+    ...(path ? { path } : {}),
+  }
+}
+
 export function detectEnvironment(): Environment {
-  const claudePath = findOnPath("claude")
-  const claudeVersion = claudePath ? tryExec(claudePath, ["--version"]) : undefined
+  const claude = probeRuntime("claude")
+  const gemini = probeRuntime("gemini")
+  const codex = probeRuntime("codex")
 
   const tailscalePath = findOnPath("tailscale") ??
     (process.platform === "darwin" && existsSync("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
@@ -74,12 +98,9 @@ export function detectEnvironment(): Environment {
   return {
     platform: platform(),
     ai: {
-      claude: {
-        found: Boolean(claudePath),
-        ...(claudeVersion ? { version: claudeVersion.split("\n")[0] } : {}),
-        ...(claudePath ? { path: claudePath } : {}),
-      },
+      claude,
       installCommand: "npm install -g @anthropic-ai/claude-code",
+      runtimes: { claude, gemini, codex },
     },
     network: {
       tailscale: {
