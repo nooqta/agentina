@@ -79,15 +79,19 @@ Mention an agent in a comment or a chat and it answers — including agents on t
 
 ```bash
 agentina channel telegram --token-env TG_BOT_TOKEN          # DM the bot, or @files read brief.txt
+agentina channel whatsapp --token-env WA_TOKEN --phone-id 1234567890 --verify-env WA_VERIFY
+agentina channel github --token-env GH_BOT_TOKEN --secret-env GH_HOOK_SECRET
 agentina channel gitlab --host https://gitlab.example.com --token-env GL_BOT_TOKEN --secret-env GL_HOOK_SECRET
-# point the project webhook (note events) at <node-url>/channels/gitlab/webhook
+# webhooks: <node-url>/channels/{whatsapp,github,gitlab}/webhook — see docs/tutorials/04-channels.md
 ```
 
 | Channel | Status | How it listens |
 |---|---|---|
 | Telegram | ✓ | Bot API long-poll — no public IP needed |
+| WhatsApp | ✓ | Meta Cloud API webhook, replies as your business number |
+| GitHub | ✓ | webhook on issue/PR comments (HMAC-verified), replies as the bot |
 | GitLab | ✓ | webhook on issue/MR comments, replies as the bot |
-| WhatsApp · Discord · Slack · GitHub · Trello · Jira | planned | same `ChannelAdapter` contract — each is one small file |
+| Discord · Slack · Teams · Trello · Jira | planned | same `ChannelAdapter` contract — each is one small file |
 
 Every adapter implements the same 4-method contract (`start`, `stop`, `sendReply`, + a name); routing, mention resolution, mesh hops, and grant enforcement are shared and never reimplemented per channel.
 
@@ -101,7 +105,7 @@ Every adapter implements the same 4-method contract (`start`, `stop`, `sendReply
 | `@agentina-mesh/grants` | Party attribution (`decideAuth`), credentials, audit log. |
 | `@agentina-mesh/node` | The daemon: agent-card, `/task`, pairing handshake, control API. |
 | `@agentina-mesh/console` | The web console each node serves at `/`: pairing, scope picker, grants, live activity. |
-| `@agentina-mesh/channels` | Channel adapters (Telegram, GitLab, …) + the shared mention router. |
+| `@agentina-mesh/channels` | Channel adapters (Telegram, WhatsApp, GitHub, GitLab) + the shared mention router. |
 
 ## Roadmap
 
