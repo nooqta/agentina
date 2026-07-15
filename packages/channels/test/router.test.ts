@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto"
 import { describe, it, expect, beforeEach } from "vitest"
-import { ChannelRouter, GitLabAdapter, GitHubAdapter, WhatsAppAdapter, type ChannelAdapter, type ChannelHost, type InboundMessage } from "@agentina-mesh/channels"
+import { ChannelRouter, GitLabAdapter, GitHubAdapter, WhatsAppAdapter, DiscordAdapter, SlackAdapter, type ChannelAdapter, type ChannelHost, type InboundMessage } from "@agentina-mesh/channels"
 
 class FakeChannel implements ChannelAdapter {
   readonly name = "fake"
@@ -62,6 +62,21 @@ describe("ChannelRouter — mention resolution", () => {
     fake.onMessage!(msg("hello there"))
     await new Promise((r) => setTimeout(r, 10))
     expect(host.calls).toEqual(["local:assistant"])
+  })
+
+  it("a bound connection speaks for ITS agent — per agent, per channel", async () => {
+    const host = makeHost()
+    const router = new ChannelRouter(host)
+    router.attach(fake, { agentId: "files", bindingId: "cb_1" })
+    await router.start()
+    // Plain message → the bound agent, not the party default.
+    fake.onMessage!(msg("what changed today?"))
+    await new Promise((r) => setTimeout(r, 10))
+    expect(host.calls).toEqual(["local:files"])
+    // An explicit mention still wins — the binding is a default, not a jail.
+    fake.onMessage!(msg("@assistant summarize"))
+    await new Promise((r) => setTimeout(r, 10))
+    expect(host.calls).toEqual(["local:files", "local:assistant"])
   })
 
   it("a remote grant denial comes back as the reply, honestly", async () => {
@@ -212,5 +227,94 @@ describe("WhatsAppAdapter — webhook handling", () => {
     }
     expect(a.handleWebhook(stranger)).toBe(200)
     expect(got).toHaveLength(0)
+  })
+})
+
+describe("DiscordAdapter — message filtering", () => {
+  function wired() {
+    const a = new DiscordAdapter({ token: "tok" })
+    const got: InboundMessage[] = []
+    ;(a as any).onMessage = (m: InboundMessage) => got.push(m)
+    ;(a as any).botUserId = "111"
+    return { a, got }
+  }
+
+  it("routes DMs, mentions, and strips the bot mention", () => {
+    const { a, got } = wired()
+    // DM (no guild) — always routed.
+    a.handleMessageCreate({ content: "hello", channel_id: "c1", author: { username: "anis" } })
+    // Guild message with an agent mention.
+    a.handleMessageCreate({ content: "@files read brief.txt", guild_id: "g1", channel_id: "c2", author: { username: "anis" } })
+    // Guild message mentioning the bot — routes with the mention stripped.
+    a.handleMessageCreate({ content: "<@111> summarize this", guild_id: "g1", channel_id: "c2", author: { username: "anis" } })
+    expect(got.map((m) => m.text)).toEqual(["hello", "@files read brief.txt", "summarize this"])
+  })
+
+  it("ignores bot authors and unmentioned guild chatter", () => {
+    const { a, got } = wired()
+    a.handleMessageCreate({ content: "@files x", guild_id: "g1", channel_id: "c2", author: { username: "bot", bot: true } })
+    a.handleMessageCreate({ content: "just chatting", guild_id: "g1", channel_id: "c2", author: { username: "anis" } })
+    expect(got).toHaveLength(0)
+  })
+
+  it("enforces the allowed-channels allowlist for guild messages", () => {
+    const a = new DiscordAdapter({ token: "tok", allowedChannels: ["c-ok"] })
+    const got: InboundMessage[] = []
+    ;(a as any).onMessage = (m: InboundMessage) => got.push(m)
+    ;(a as any).botUserId = "111"
+    a.handleMessageCreate({ content: "@files x", guild_id: "g1", channel_id: "c-other", author: { username: "anis" } })
+    a.handleMessageCreate({ content: "@files x", guild_id: "g1", channel_id: "c-ok", author: { username: "anis" } })
+    expect(got).toHaveLength(1)
+    expect(got[0].chatId).toBe("c-ok")
+  })
+})
+
+describe("SlackAdapter — events handling", () => {
+  const cfg = { token: "xoxb-tok", signingSecret: "sl-s3cret" }
+  const sign = (ts: string, raw: string) =>
+    "v0=" + createHmac("sha256", cfg.signingSecret).update(`v0:${ts}:${raw}`).digest("hex")
+  const now = () => String(Math.floor(Date.now() / 1000))
+
+  function wired() {
+    const a = new SlackAdapter(cfg)
+    const got: InboundMessage[] = []
+    ;(a as any).onMessage = (m: InboundMessage) => got.push(m)
+    ;(a as any).botUserId = "UBOT"
+    return { a, got }
+  }
+
+  it("echoes the url_verification challenge", () => {
+    const { a } = wired()
+    const raw = JSON.stringify({ type: "url_verification", challenge: "chal-42" })
+    const ts = now()
+    const r = a.handleWebhook({ "x-slack-request-timestamp": ts, "x-slack-signature": sign(ts, raw) }, raw)
+    expect(r.status).toBe(200)
+    expect(JSON.parse(r.body!)).toEqual({ challenge: "chal-42" })
+  })
+
+  it("rejects bad signatures and stale timestamps", () => {
+    const { a } = wired()
+    const raw = JSON.stringify({ type: "url_verification", challenge: "x" })
+    const ts = now()
+    expect(a.handleWebhook({ "x-slack-request-timestamp": ts, "x-slack-signature": "v0=bad" }, raw).status).toBe(401)
+    const old = String(Math.floor(Date.now() / 1000) - 3600)
+    expect(a.handleWebhook({ "x-slack-request-timestamp": old, "x-slack-signature": sign(old, raw) }, raw).status).toBe(401)
+  })
+
+  it("routes app_mention with the bot mention stripped, acks retries without re-routing", () => {
+    const { a, got } = wired()
+    const event = {
+      type: "event_callback",
+      event: { type: "app_mention", user: "U123", channel: "C9", ts: "1700.1", text: "<@UBOT> @files read brief.txt" },
+    }
+    const raw = JSON.stringify(event)
+    const ts = now()
+    expect(a.handleWebhook({ "x-slack-request-timestamp": ts, "x-slack-signature": sign(ts, raw) }, raw).status).toBe(200)
+    expect(got[0]).toMatchObject({ chatId: "C9", text: "@files read brief.txt", sender: "U123" })
+    expect(got[0].meta).toEqual({ threadTs: "1700.1" })
+    // Slack retrying the same delivery must not trigger a second answer.
+    const r = a.handleWebhook({ "x-slack-request-timestamp": ts, "x-slack-signature": sign(ts, raw), "x-slack-retry-num": "1" }, raw)
+    expect(r.status).toBe(200)
+    expect(got).toHaveLength(1)
   })
 })
