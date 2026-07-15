@@ -1,18 +1,45 @@
 {
   "name": "agentina",
   "version": "0.1.0",
-  "description": "Agent collaboration across trust boundaries — pair two parties, grant scoped access, exchange A2A tasks. Self-hosted, auditable.",
+  "description": "Agent collaboration across trust boundaries — pair two parties, grant scoped access, exchange A2A tasks. Self-hosted, auditable, no cloud in the middle.",
   "type": "module",
   "bin": { "agentina": "./dist/cli.js" },
   "main": "./dist/cli.js",
   "files": ["dist"],
-  "scripts": { "build": "tsup src/cli.ts --format esm --dts --clean" },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --clean",
+    "prepublishOnly": "npm run build && cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE"
+  },
   "dependencies": {
+    "undici": "^7.2.0"
+  },
+  "devDependencies": {
     "@agentina-mesh/protocol": "workspace:*",
     "@agentina-mesh/peer": "workspace:*",
     "@agentina-mesh/grants": "workspace:*",
     "@agentina-mesh/node": "workspace:*"
   },
   "engines": { "node": ">=20" },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Anis Marrouchi (https://noqta.tn)",
+  "repository": { "type": "git", "url": "git+https://github.com/nooqta/agentina.git" },
+  "homepage": "https://github.com/nooqta/agentina#readme",
+  "bugs": { "url": "https://github.com/nooqta/agentina/issues" },
+  "keywords": [
+    "agents",
+    "ai-agents",
+    "a2a",
+    "multi-agent",
+    "collaboration",
+    "trust-boundary",
+    "grants",
+    "access-control",
+    "claude",
+    "telegram",
+    "whatsapp",
+    "discord",
+    "slack",
+    "self-hosted",
+    "p2p"
+  ]
 }

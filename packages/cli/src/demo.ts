@@ -159,7 +159,7 @@ export async function runDemo(opts: { basePort?: number; print?: (line: string) 
     print(ok
       ? "  All checks passed — M1: pair → deny → grant → scoped read → escape denied → revoke → audit."
       : "  SOME CHECKS FAILED")
-    print("  Worth your time? A star helps others find it: https://github.com/agentina-mesh/agentina")
+    print("  Worth your time? A star helps others find it: https://github.com/nooqta/agentina")
     print("")
     return { steps, ok }
   } finally {
