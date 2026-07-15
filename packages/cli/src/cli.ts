@@ -103,6 +103,10 @@ Usage:
   agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
   agentina channel whatsapp --token-env <VAR> --phone-id <id> [--verify-env <VAR>] [--numbers <wa_id,…>]
   agentina channel github --token-env <VAR> [--secret-env <VAR>]
+  agentina channel discord --token-env <VAR> [--channels <id,id…>]
+  agentina channel slack --token-env <VAR> [--secret-env <VAR>]
+                  (add --agent <id> to any channel: that connection answers as
+                   that agent — its own bot/number, no @mention needed)
   agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--skill <id>] [--expires 2h|7d|<ISO>]
   agentina session --to <peer> --ttl <45m|2h> --adapter scoped-fs|ssh-exec|scoped-git|claude-code
                    [--root <dir>] [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--agent-id <id>]
@@ -209,10 +213,13 @@ async function main(): Promise<void> {
 
     case "channel": {
       const kind = positional[0]
-      if (kind !== "telegram" && kind !== "gitlab" && kind !== "whatsapp" && kind !== "github") {
-        throw new Error("Usage: agentina channel telegram|gitlab|whatsapp|github …")
+      if (!["telegram", "gitlab", "whatsapp", "github", "discord", "slack"].includes(kind)) {
+        throw new Error("Usage: agentina channel telegram|gitlab|whatsapp|github|discord|slack …")
       }
       const body: Record<string, unknown> = { kind, tokenEnv: flags["token-env"] }
+      // --agent binds the connection to one agent: its own bot/number,
+      // no mention needed — agentina working for its owner alone.
+      if (typeof flags.agent === "string") body.agentId = flags.agent
       if (kind === "telegram" && typeof flags.chats === "string") body.allowedChats = flags.chats.split(",")
       if (kind === "gitlab") {
         body.host = flags.host
@@ -226,11 +233,20 @@ async function main(): Promise<void> {
       if (kind === "github") {
         if (typeof flags["secret-env"] === "string") body.webhookSecretEnv = flags["secret-env"]
       }
+      if (kind === "discord") {
+        if (typeof flags.channels === "string") body.allowedChannels = flags.channels.split(",")
+      }
+      if (kind === "slack") {
+        if (typeof flags["secret-env"] === "string") body.signingSecretEnv = flags["secret-env"]
+      }
       const r = await control(port, "POST", "/agentina/v1/channels", body)
-      console.log(`Configured ${r.configured} — ${r.note}`)
+      console.log(`Configured ${kind}${body.agentId ? ` for agent ${body.agentId}` : ""} — ${r.note}`)
+      if (r.webhookPath) console.log(`This connection's webhook: <node-url>${r.webhookPath}`)
       if (kind === "gitlab") console.log(`Point the project webhook at: <node-url>/channels/gitlab/webhook (note events)`)
       if (kind === "github") console.log(`Point the repo webhook at: <node-url>/channels/github/webhook (issue comments event)`)
       if (kind === "whatsapp") console.log(`Point the Meta app webhook at: <node-url>/channels/whatsapp/webhook (messages field)`)
+      if (kind === "slack") console.log(`Point the app's Event Subscriptions request URL at: <node-url>/channels/slack/events (app_mention event)`)
+      if (kind === "discord") console.log(`No webhook needed — the node connects out to Discord's gateway (Node 22+).`)
       return
     }
 

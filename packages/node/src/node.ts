@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import type {
   AgentCard, Party, PartyKind, Scope, AgentOffer, CollabSession, AdapterSpec,
   InvitePayload, PairCompleteRequest, PairCompleteResponse, PingResponse,
@@ -7,8 +10,8 @@ import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
 import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant } from "@agentina-mesh/grants"
 import { CONSOLE_HTML } from "@agentina-mesh/console"
-import { ChannelRouter, TelegramAdapter, GitLabAdapter, WhatsAppAdapter, GitHubAdapter, type ChannelHost } from "@agentina-mesh/channels"
-import { NodeState } from "./state"
+import { ChannelRouter, TelegramAdapter, GitLabAdapter, WhatsAppAdapter, GitHubAdapter, DiscordAdapter, SlackAdapter, type ChannelHost } from "@agentina-mesh/channels"
+import { NodeState, type ChannelKind } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
 import { ScopedFsAdapter } from "./adapters/scoped-fs"
 import { ClaudeCodeAdapter } from "./adapters/claude-code"
@@ -16,6 +19,7 @@ import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
 import { listSkillNames, listSkills } from "./skills"
+import { loadSecrets, storeSecret } from "./secrets"
 import { detectEnvironment, type Environment } from "./environment"
 import { suggestDirs } from "./fs-suggest"
 import { SCENARIOS } from "./scenarios"
@@ -65,12 +69,11 @@ export class AgentinaNode {
   readonly grants: GrantStore
   readonly mesh: Mesh
   readonly channels: ChannelRouter
-  private gitlabChannel?: GitLabAdapter
-  private whatsappChannel?: WhatsAppAdapter
-  private githubChannel?: GitHubAdapter
+  /** Webhook-fed adapters by binding id — HTTP dispatch looks up here. */
+  private webhookAdapters = new Map<string, GitLabAdapter | WhatsAppAdapter | GitHubAdapter | SlackAdapter>()
   private adapter: AgentAdapter
   private adapters = new Map<string, AgentAdapter>()
-  private server?: Server
+  private server?: Server | HttpsServer
   private log: (...args: unknown[]) => void
   private trustLoopback: boolean
   private sessionSweeper?: ReturnType<typeof setInterval>
@@ -78,21 +81,32 @@ export class AgentinaNode {
   private environment: Environment = detectEnvironment()
   readonly chat!: ChatLog
   readonly port: number
-  readonly bind: string
+  bind: string
 
   constructor(opts: AgentinaNodeOptions) {
     this.port = opts.port
-    this.bind = opts.bind ?? "127.0.0.1"
     this.sessionSweepMsOpt = opts.sessionSweepMs ?? 30_000
     this.trustLoopback = opts.trustLoopback !== false
     this.log = opts.log ?? console.error.bind(console, "[agentina]")
-    const advertisable = this.bind !== "127.0.0.1" && this.bind !== "0.0.0.0" && this.bind !== "::"
-    const url = opts.url ?? `http://${advertisable ? this.bind : "127.0.0.1"}:${opts.port}`
+    // State first — the console may have persisted a bind/url that a
+    // plain restart must keep. Explicit CLI flags override it.
+    const optBind = opts.bind
+    const optAdvertisable = optBind && optBind !== "127.0.0.1" && optBind !== "0.0.0.0" && optBind !== "::"
+    const explicitUrl = opts.url ?? (optAdvertisable ? `http://${optBind}:${opts.port}` : undefined)
     this.state = new NodeState(opts.stateDir, {
       partyName: opts.partyName ?? "unnamed-party",
       partyKind: opts.partyKind,
-      url,
+      url: explicitUrl ?? `http://127.0.0.1:${opts.port}`,
+      urlIsExplicit: Boolean(explicitUrl),
     })
+    this.bind = optBind ?? this.state.data.bind ?? "127.0.0.1"
+    if (optBind && this.state.data.bind !== optBind) {
+      this.state.data.bind = optBind
+      this.state.save()
+    }
+    // Secrets pasted in the console (owner-only file) become env vars
+    // here — BEFORE channels read their tokenEnv. Real env vars win.
+    loadSecrets(join(opts.stateDir, "secrets.env"))
     this.audit = new JsonlAuditLog(this.state.auditPath())
     ;(this as { chat: ChatLog }).chat = new ChatLog(opts.stateDir)
     this.credentials = new CredentialStore(this.state.data.credentials, (all) => {
@@ -141,80 +155,135 @@ export class AgentinaNode {
     this.buildChannelsFromConfig()
   }
 
-  /** Instantiate adapters declared in state.channels (secrets come from
-   *  the env vars the config names — never from the state file). */
+  /** Instantiate adapters from the channel BINDINGS — one connection
+   *  per binding, optionally speaking for one agent (secrets come from
+   *  the env vars the binding names — never from the state file). */
   private buildChannelsFromConfig(): void {
-    const cfg = this.state.data.channels
-    if (!cfg) return
-    if (cfg.telegram) {
-      const token = process.env[cfg.telegram.tokenEnv]
-      if (token) {
-        this.channels.attach(new TelegramAdapter({ token, allowedChats: cfg.telegram.allowedChats }, this.log))
-      } else {
-        this.log(`[channels] telegram configured but $${cfg.telegram.tokenEnv} is unset — skipped`)
+    for (const b of this.state.data.channelBindings ?? []) {
+      const token = process.env[b.tokenEnv]
+      if (!token) {
+        this.log(`[channels] ${b.kind} (${b.id}) configured but $${b.tokenEnv} is unset — skipped`)
+        continue
+      }
+      const opts = { agentId: b.agentId, bindingId: b.id }
+      switch (b.kind) {
+        case "telegram":
+          this.channels.attach(new TelegramAdapter({ token, allowedChats: b.allowedChats }, this.log), opts)
+          break
+        case "discord":
+          this.channels.attach(new DiscordAdapter({ token, allowedChannels: b.allowedChannels }, this.log), opts)
+          break
+        case "gitlab": {
+          const a = new GitLabAdapter(
+            { host: b.host ?? "", token, webhookSecret: b.webhookSecretEnv ? process.env[b.webhookSecretEnv] : undefined },
+            this.log,
+          )
+          this.webhookAdapters.set(b.id, a)
+          this.channels.attach(a, opts)
+          break
+        }
+        case "whatsapp": {
+          const a = new WhatsAppAdapter(
+            {
+              token,
+              phoneNumberId: b.phoneNumberId ?? "",
+              verifyToken: b.verifyTokenEnv ? process.env[b.verifyTokenEnv] : undefined,
+              allowedNumbers: b.allowedNumbers,
+            },
+            this.log,
+          )
+          this.webhookAdapters.set(b.id, a)
+          this.channels.attach(a, opts)
+          break
+        }
+        case "github": {
+          const a = new GitHubAdapter(
+            { token, webhookSecret: b.webhookSecretEnv ? process.env[b.webhookSecretEnv] : undefined },
+            this.log,
+          )
+          this.webhookAdapters.set(b.id, a)
+          this.channels.attach(a, opts)
+          break
+        }
+        case "slack": {
+          const a = new SlackAdapter(
+            { token, signingSecret: b.signingSecretEnv ? process.env[b.signingSecretEnv] : undefined },
+            this.log,
+          )
+          this.webhookAdapters.set(b.id, a)
+          this.channels.attach(a, opts)
+          break
+        }
       }
     }
-    if (cfg.gitlab) {
-      const token = process.env[cfg.gitlab.tokenEnv]
-      if (token) {
-        this.gitlabChannel = new GitLabAdapter(
-          {
-            host: cfg.gitlab.host,
-            token,
-            webhookSecret: cfg.gitlab.webhookSecretEnv ? process.env[cfg.gitlab.webhookSecretEnv] : undefined,
-          },
-          this.log,
-        )
-        this.channels.attach(this.gitlabChannel)
-      } else {
-        this.log(`[channels] gitlab configured but $${cfg.gitlab.tokenEnv} is unset — skipped`)
-      }
-    }
-    if (cfg.whatsapp) {
-      const token = process.env[cfg.whatsapp.tokenEnv]
-      if (token) {
-        this.whatsappChannel = new WhatsAppAdapter(
-          {
-            token,
-            phoneNumberId: cfg.whatsapp.phoneNumberId,
-            verifyToken: cfg.whatsapp.verifyTokenEnv ? process.env[cfg.whatsapp.verifyTokenEnv] : undefined,
-            allowedNumbers: cfg.whatsapp.allowedNumbers,
-          },
-          this.log,
-        )
-        this.channels.attach(this.whatsappChannel)
-      } else {
-        this.log(`[channels] whatsapp configured but $${cfg.whatsapp.tokenEnv} is unset — skipped`)
-      }
-    }
-    if (cfg.github) {
-      const token = process.env[cfg.github.tokenEnv]
-      if (token) {
-        this.githubChannel = new GitHubAdapter(
-          {
-            token,
-            webhookSecret: cfg.github.webhookSecretEnv ? process.env[cfg.github.webhookSecretEnv] : undefined,
-          },
-          this.log,
-        )
-        this.channels.attach(this.githubChannel)
-      } else {
-        this.log(`[channels] github configured but $${cfg.github.tokenEnv} is unset — skipped`)
-      }
-    }
+  }
+
+  /** Resolve a webhook target: a binding id, or a kind name (legacy
+   *  paths — the first binding of that kind answers). */
+  private webhookAdapterFor(ref: string): GitLabAdapter | WhatsAppAdapter | GitHubAdapter | SlackAdapter | undefined {
+    const direct = this.webhookAdapters.get(ref)
+    if (direct) return direct
+    const binding = (this.state.data.channelBindings ?? []).find((b) => b.kind === ref)
+    return binding ? this.webhookAdapters.get(binding.id) : undefined
   }
 
   get party(): Party {
     return this.state.data.party
   }
 
-  async start(): Promise<void> {
-    this.server = createServer((req, res) => {
+  /** HTTP by default; HTTPS when the state names certificate files —
+   *  an unreadable cert logs and falls back rather than killing boot. */
+  private buildServer(): Server | HttpsServer {
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
       this.handle(req, res).catch((e) => {
         this.log(`handler error: ${e?.message || e}`)
         this.json(res, 500, { error: String(e?.message || e) })
       })
+    }
+    const tls = this.state.data.tls
+    if (tls) {
+      try {
+        const cert = readFileSync(tls.certPath)
+        const key = readFileSync(tls.keyPath)
+        this.log(`[tls] serving https with ${tls.certPath}`)
+        return createHttpsServer({ cert, key }, handler)
+      } catch (e: any) {
+        this.log(`[tls] certificate unreadable (${e?.message || e}) — serving plain http`)
+      }
+    }
+    return createServer(handler)
+  }
+
+  /** Re-create the listener in place — how console-made bind/TLS
+   *  changes apply without anyone touching a terminal. */
+  async restartListener(): Promise<void> {
+    if (this.server) {
+      const old = this.server
+      await new Promise<void>((resolve) => {
+        old.close(() => resolve())
+        old.closeAllConnections?.() // don't wait on idle keep-alives
+      })
+    }
+    this.server = this.buildServer()
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once("error", reject)
+      this.server!.listen(this.port, this.bind, resolve)
     })
+    this.log(`[listener] now on ${this.bind}:${this.port}${this.state.data.tls ? " (https)" : ""}`)
+  }
+
+  /** Tear channels down and rebuild them from config — how a pasted
+   *  token starts its channel immediately, no process restart. */
+  async reloadChannels(): Promise<Array<{ name: string; bindingId: string; agentId?: string; ok: boolean; error?: string }>> {
+    await this.channels.stop()
+    this.channels.reset()
+    this.webhookAdapters.clear()
+    this.buildChannelsFromConfig()
+    return this.channels.start()
+  }
+
+  async start(): Promise<void> {
+    this.server = this.buildServer()
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject)
       this.server!.listen(this.port, this.bind, resolve)
@@ -627,40 +696,49 @@ export class AgentinaNode {
       return this.handlePairComplete(req, res)
     }
 
-    // Public: GitLab webhook — X-Gitlab-Token is its auth; the adapter
-    // verifies it and returns 401 on mismatch.
-    if (route === "POST /channels/gitlab/webhook") {
-      if (!this.gitlabChannel) return this.json(res, 404, { error: "gitlab channel not configured" })
-      const body = await this.readBody(req)
-      const status = this.gitlabChannel.handleWebhook(req.headers, body)
-      return this.json(res, status, { ok: status < 400 })
-    }
-
-    // Public: GitHub webhook — HMAC over the RAW bytes is its auth, so
-    // the adapter gets the unparsed body and verifies before parsing.
-    if (route === "POST /channels/github/webhook") {
-      if (!this.githubChannel) return this.json(res, 404, { error: "github channel not configured" })
-      const raw = await this.readRawBody(req)
-      const status = this.githubChannel.handleWebhook(req.headers, raw)
-      return this.json(res, status, { ok: status < 400 })
-    }
-
-    // Public: WhatsApp webhook — GET is Meta's verification handshake,
-    // POST carries messages (statuses of our own sends are ignored).
-    if (route === "GET /channels/whatsapp/webhook") {
-      if (!this.whatsappChannel) return this.json(res, 404, { error: "whatsapp channel not configured" })
-      const query = new URL(req.url ?? "/", "http://x").searchParams
-      const challenge = this.whatsappChannel.verify(query)
-      if (challenge === undefined) return this.json(res, 403, { error: "verification failed" })
-      res.writeHead(200, { "Content-Type": "text/plain" })
-      res.end(challenge)
-      return
-    }
-    if (route === "POST /channels/whatsapp/webhook") {
-      if (!this.whatsappChannel) return this.json(res, 404, { error: "whatsapp channel not configured" })
-      const body = await this.readBody(req)
-      const status = this.whatsappChannel.handleWebhook(body)
-      return this.json(res, status, { ok: status < 400 })
+    // Public: channel webhooks — /channels/<binding-id>/webhook (each
+    // connection has its own address), with /channels/<kind>/webhook
+    // and /channels/slack/events as aliases for the first binding of
+    // that kind. Each adapter carries its own auth (shared token, HMAC,
+    // or Meta's verify handshake) and returns 401/403 on mismatch.
+    const hookMatch = path.match(/^\/channels\/([^/]+)\/(webhook|events)$/)
+    if (hookMatch) {
+      const adapter = this.webhookAdapterFor(hookMatch[1])
+      if (!adapter) return this.json(res, 404, { error: "no such channel connection" })
+      if (req.method === "GET" && adapter instanceof WhatsAppAdapter) {
+        const query = new URL(req.url ?? "/", "http://x").searchParams
+        const challenge = adapter.verify(query)
+        if (challenge === undefined) return this.json(res, 403, { error: "verification failed" })
+        res.writeHead(200, { "Content-Type": "text/plain" })
+        res.end(challenge)
+        return
+      }
+      if (req.method === "POST") {
+        if (adapter instanceof SlackAdapter) {
+          const raw = await this.readRawBody(req)
+          const result = adapter.handleWebhook(req.headers, raw)
+          if (result.body !== undefined) {
+            res.writeHead(result.status, { "Content-Type": "application/json" })
+            res.end(result.body)
+            return
+          }
+          return this.json(res, result.status, { ok: result.status < 400 })
+        }
+        if (adapter instanceof GitHubAdapter) {
+          const raw = await this.readRawBody(req)
+          const status = adapter.handleWebhook(req.headers, raw)
+          return this.json(res, status, { ok: status < 400 })
+        }
+        if (adapter instanceof WhatsAppAdapter) {
+          const body = await this.readBody(req)
+          const status = adapter.handleWebhook(body)
+          return this.json(res, status, { ok: status < 400 })
+        }
+        const body = await this.readBody(req)
+        const status = adapter.handleWebhook(req.headers, body)
+        return this.json(res, status, { ok: status < 400 })
+      }
+      return this.json(res, 405, { error: "method not allowed" })
     }
 
     // Everything else requires attribution (party token or loopback).
@@ -844,43 +922,91 @@ export class AgentinaNode {
         return this.json(res, 200, { closed: body.id })
       }
 
+      // Create or update one channel CONNECTION (a binding) — per agent,
+      // per channel: `agentId` makes this connection that agent's face.
       case "POST /agentina/v1/channels": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
-        const kind = String(body.kind ?? "")
-        const channels = (this.state.data.channels ??= {})
-        if (kind === "telegram") {
-          if (!body.tokenEnv) return this.json(res, 400, { error: "Missing: tokenEnv" })
-          channels.telegram = {
-            tokenEnv: String(body.tokenEnv),
-            ...(Array.isArray(body.allowedChats) ? { allowedChats: body.allowedChats.map(String) } : {}),
-          }
-        } else if (kind === "gitlab") {
-          if (!body.host || !body.tokenEnv) return this.json(res, 400, { error: "Missing: host, tokenEnv" })
-          channels.gitlab = {
-            host: String(body.host),
-            tokenEnv: String(body.tokenEnv),
-            ...(body.webhookSecretEnv ? { webhookSecretEnv: String(body.webhookSecretEnv) } : {}),
-          }
-        } else if (kind === "whatsapp") {
-          if (!body.tokenEnv || !body.phoneNumberId) return this.json(res, 400, { error: "Missing: tokenEnv, phoneNumberId" })
-          channels.whatsapp = {
-            tokenEnv: String(body.tokenEnv),
-            phoneNumberId: String(body.phoneNumberId),
-            ...(body.verifyTokenEnv ? { verifyTokenEnv: String(body.verifyTokenEnv) } : {}),
-            ...(Array.isArray(body.allowedNumbers) ? { allowedNumbers: body.allowedNumbers.map(String) } : {}),
-          }
-        } else if (kind === "github") {
-          if (!body.tokenEnv) return this.json(res, 400, { error: "Missing: tokenEnv" })
-          channels.github = {
-            tokenEnv: String(body.tokenEnv),
-            ...(body.webhookSecretEnv ? { webhookSecretEnv: String(body.webhookSecretEnv) } : {}),
-          }
-        } else {
-          return this.json(res, 400, { error: `Unknown channel kind: ${kind} (telegram | gitlab | whatsapp | github)` })
+        const kind = String(body.kind ?? "") as ChannelKind
+        const KINDS: ChannelKind[] = ["telegram", "gitlab", "whatsapp", "github", "discord", "slack"]
+        if (!KINDS.includes(kind)) {
+          return this.json(res, 400, { error: `Unknown channel kind: ${kind} (${KINDS.join(" | ")})` })
         }
+        const agentId = typeof body.agentId === "string" && body.agentId.trim() ? body.agentId.trim() : undefined
+        if (agentId && !this.state.data.agents.some((a) => a.id === agentId)) {
+          return this.json(res, 404, { error: `Unknown agent: ${agentId}` })
+        }
+        const bindings = (this.state.data.channelBindings ??= [])
+        // Explicit id updates that binding; otherwise one connection per
+        // (kind, agent) pair — saving again reconfigures it.
+        let binding = body.id
+          ? bindings.find((b) => b.id === String(body.id))
+          : bindings.find((b) => b.kind === kind && b.agentId === agentId)
+        if (body.id && !binding) return this.json(res, 404, { error: "No channel connection with that id" })
+        if (!binding) {
+          binding = { id: newId("cb"), kind, tokenEnv: "" }
+          bindings.push(binding)
+        }
+        binding.kind = kind
+        if ("agentId" in body) binding.agentId = agentId
+        const setStr = (key: "tokenEnv" | "host" | "webhookSecretEnv" | "phoneNumberId" | "verifyTokenEnv" | "signingSecretEnv") => {
+          if (typeof body[key] === "string" && (body[key] as string).trim()) binding![key] = (body[key] as string).trim()
+        }
+        setStr("tokenEnv"); setStr("host"); setStr("webhookSecretEnv")
+        setStr("phoneNumberId"); setStr("verifyTokenEnv"); setStr("signingSecretEnv")
+        const setList = (key: "allowedChats" | "allowedNumbers" | "allowedChannels") => {
+          if (Array.isArray(body[key])) binding![key] = (body[key] as unknown[]).map(String)
+        }
+        setList("allowedChats"); setList("allowedNumbers"); setList("allowedChannels")
+        if (!binding.tokenEnv) return this.json(res, 400, { error: "Missing: tokenEnv" })
+        if (kind === "gitlab" && !binding.host) return this.json(res, 400, { error: "Missing: host" })
+        if (kind === "whatsapp" && !binding.phoneNumberId) return this.json(res, 400, { error: "Missing: phoneNumberId" })
         this.state.save()
-        return this.json(res, 201, { configured: kind, note: "restart the node to start the channel" })
+        // Apply immediately — pasted token, running channel, one click.
+        let statuses: Array<{ name: string; bindingId: string; ok: boolean; error?: string }> = []
+        try {
+          statuses = await this.reloadChannels()
+        } catch (e: any) {
+          this.log(`[channels] reload failed: ${e?.message || e}`)
+        }
+        const mine = statuses.find((s) => s.bindingId === binding!.id)
+        return this.json(res, 201, {
+          binding,
+          webhookPath: `/channels/${binding.id}/webhook`,
+          running: this.channels.channelNames(),
+          statuses,
+          note: mine?.ok
+            ? `${kind} is on${binding.agentId ? ` — answering as ${binding.agentId}` : ""}`
+            : mine?.error
+              ? `saved, but it didn't start: ${mine.error}`
+              : "saved — set its token to start it",
+        })
+      }
+
+      case "POST /agentina/v1/channels/remove": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const id = String(body.id ?? "")
+        const bindings = this.state.data.channelBindings ?? []
+        if (!bindings.some((b) => b.id === id)) return this.json(res, 404, { error: "No channel connection with that id" })
+        this.state.data.channelBindings = bindings.filter((b) => b.id !== id)
+        this.state.save()
+        try { await this.reloadChannels() } catch (e: any) { this.log(`[channels] reload failed: ${e?.message || e}`) }
+        return this.json(res, 200, { removed: id, running: this.channels.channelNames() })
+      }
+
+      // Paste-a-token path: the value lands in <stateDir>/secrets.env
+      // (owner-only, same trust level as node.json's credentials) and
+      // becomes live in this process at once. Env vars still override.
+      case "POST /agentina/v1/secrets": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        try {
+          storeSecret(join(this.state.stateDir, "secrets.env"), String(body.name ?? ""), String(body.value ?? ""))
+        } catch (e: any) {
+          return this.json(res, 400, { error: String(e?.message || e) })
+        }
+        return this.json(res, 200, { stored: String(body.name) })
       }
 
       case "POST /agentina/v1/agents": {
@@ -929,13 +1055,49 @@ export class AgentinaNode {
         const profile = (this.state.data.profile ??= {})
         if (typeof body.role === "string") profile.role = body.role.trim()
         if (typeof body.color === "string") profile.color = body.color.trim()
+        let needsRelisten = false
         if (typeof body.url === "string" && body.url.trim()) {
           const raw = body.url.trim()
+          const scheme = this.state.data.tls ? "https" : "http"
           // Accept a bare overlay IP/host and normalize to a URL peers can dial.
-          this.state.data.url = /^https?:\/\//.test(raw) ? raw : `http://${raw}:${this.port}`
+          this.state.data.url = /^https?:\/\//.test(raw) ? raw : `${scheme}://${raw}:${this.port}`
+          // A reachable address is useless while the listener only
+          // answers loopback — widen it, no terminal required.
+          const loopbackBound = this.bind === "127.0.0.1" || this.bind === "localhost" || this.bind === "::1"
+          if (loopbackBound && this.state.data.url.indexOf("127.0.0.1") < 0 && this.state.data.url.indexOf("localhost") < 0) {
+            this.bind = "0.0.0.0"
+            this.state.data.bind = "0.0.0.0"
+            needsRelisten = true
+          }
+        }
+        if (typeof body.publicUrl === "string") {
+          const v = body.publicUrl.trim().replace(/\/+$/, "")
+          if (v) this.state.data.publicUrl = v
+          else delete this.state.data.publicUrl
+        }
+        if (typeof body.tlsCertPath === "string" && typeof body.tlsKeyPath === "string") {
+          if (body.tlsCertPath.trim() && body.tlsKeyPath.trim()) {
+            this.state.data.tls = { certPath: body.tlsCertPath.trim(), keyPath: body.tlsKeyPath.trim() }
+          } else {
+            delete this.state.data.tls
+          }
+          needsRelisten = true
         }
         this.state.save()
-        return this.json(res, 200, { party: this.party, profile, url: this.state.data.url })
+        if (needsRelisten) {
+          // After the response flushes — the caller's socket rides the old listener.
+          setImmediate(() => {
+            this.restartListener().catch((e) => this.log(`[listener] restart failed: ${e?.message || e}`))
+          })
+        }
+        return this.json(res, 200, {
+          party: this.party,
+          profile,
+          url: this.state.data.url,
+          publicUrl: this.state.data.publicUrl,
+          tls: Boolean(this.state.data.tls),
+          relistening: needsRelisten,
+        })
       }
 
       case "GET /agentina/v1/scenarios": {
@@ -1077,6 +1239,8 @@ export class AgentinaNode {
           profile: this.state.data.profile ?? {},
           url: this.state.data.url,
           bind: this.bind,
+          publicUrl: this.state.data.publicUrl,
+          tls: Boolean(this.state.data.tls),
           protocol: PROTOCOL_VERSION,
           agents: this.state.data.agents.map((a) => ({
             id: a.id,
@@ -1099,7 +1263,11 @@ export class AgentinaNode {
           grants: this.grants.list(),
           sessions: this.state.data.sessions,
           channels: this.channels.channelNames(),
-          channelsConfig: this.state.data.channels ?? {},
+          channelBindings: (this.state.data.channelBindings ?? []).map((b) => ({
+            ...b,
+            running: this.channels.runningBindings().includes(b.id),
+            webhookPath: `/channels/${b.id}/webhook`,
+          })),
           environment: this.environment,
           ui: this.state.data.ui ?? { mode: "simple" },
           audit: this.audit.tail(20),
