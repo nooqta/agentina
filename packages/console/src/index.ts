@@ -479,6 +479,9 @@ export const CONSOLE_HTML = `<!doctype html>
       css(connLink, { marginTop: "10px" });
       d.appendChild(connLink);
     }
+    var helpLink = B("mutedbtn", "New here? Help & guides", function () { go("help"); });
+    css(helpLink, { marginTop: "4px" });
+    d.appendChild(helpLink);
     return d;
   };
 
@@ -600,9 +603,11 @@ export const CONSOLE_HTML = `<!doctype html>
     row.appendChild(agentsB); row.appendChild(actB);
     d.appendChild(row);
 
-    var adv = B("mutedbtn", "Advanced settings", function () { go("advanced"); });
-    css(adv, { alignSelf: "center", marginTop: "36px" });
-    d.appendChild(adv);
+    var foot = css(E("div"), { display: "flex", justifyContent: "center", gap: "8px", marginTop: "36px" });
+    foot.appendChild(B("mutedbtn", "Help & guides", function () { go("help"); }));
+    foot.appendChild(css(E("div", null, "·"), { color: "#dadce0", alignSelf: "center" }));
+    foot.appendChild(B("mutedbtn", "Advanced settings", function () { go("advanced"); }));
+    d.appendChild(foot);
     return d;
   };
 
@@ -810,7 +815,13 @@ export const CONSOLE_HTML = `<!doctype html>
     var convRow = css(E("div"), { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: "2px 0 10px" });
     convRow.appendChild(css(E("div", null, "Talk here or via"), { fontSize: "13px", fontWeight: "700", color: "#9aa0a6" }));
     var convKey = S.conv[c.name] || "console";
-    [{ key: "console", label: "Console" }, { key: "telegram", label: "Telegram" }, { key: "gitlab", label: "GitLab" }].forEach(function (cc) {
+    var CONV_WHERE = {
+      telegram: "from your Telegram bot",
+      gitlab: "in a GitLab issue or MR comment",
+      whatsapp: "from WhatsApp — text the number like a contact",
+      github: "in a GitHub issue or PR comment"
+    };
+    [{ key: "console", label: "Console" }, { key: "whatsapp", label: "WhatsApp" }, { key: "telegram", label: "Telegram" }, { key: "github", label: "GitHub" }, { key: "gitlab", label: "GitLab" }].forEach(function (cc) {
       var b = B("chip-sm" + (convKey === cc.key ? " sel" : ""), esc(cc.label), function () {
         if (cc.key !== "console" && !channelRunning(cc.key) && !channelConfigured(cc.key)) {
           toast("Set up " + cc.label + " first");
@@ -825,9 +836,11 @@ export const CONSOLE_HTML = `<!doctype html>
     });
     d.appendChild(convRow);
     if (convKey !== "console") {
-      var noteText = convKey === "telegram"
-        ? "Telegram is connected — @mention an agent from your bot and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity."
-        : "GitLab is connected — @mention an agent in an issue or MR comment and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity.";
+      var label = convKey.charAt(0).toUpperCase() + convKey.slice(1);
+      if (convKey === "whatsapp") label = "WhatsApp";
+      if (convKey === "github") label = "GitHub";
+      if (convKey === "gitlab") label = "GitLab";
+      var noteText = label + " is connected — @mention an agent " + (CONV_WHERE[convKey] || "there") + " and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity.";
       var note = E("div", null, esc(noteText));
       css(note, { background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "14px", padding: "12px 16px", fontSize: "14px", color: BLUE_D, fontWeight: "600", lineHeight: "1.5", marginBottom: "12px" });
       d.appendChild(note);
@@ -1482,13 +1495,14 @@ export const CONSOLE_HTML = `<!doctype html>
         { n: "4", title: "Set the webhook secret", body: "Give the webhook a secret token and export it too:", code: "export GL_HOOK_SECRET=…" },
         { n: "5", title: "Mention it", body: "Write @assistant summarize this MR in any issue or MR comment — the bot replies right in the thread." }
       ] },
-    { id: "whatsapp", name: "WhatsApp", glyph: "WA", bg: GREEN_BG, fg: GREEN_D, ready: false,
+    { id: "whatsapp", name: "WhatsApp", glyph: "WA", bg: GREEN_BG, fg: GREEN_D, ready: true,
       tagline: "Message an agent like any contact",
       steps: [
-        { n: "1", title: "Get a Cloud API number", body: "In Meta's WhatsApp Business Cloud API, create an app and note the phone number ID." },
-        { n: "2", title: "Export the token", body: "Generate a permanent access token and export it:", code: "export WA_TOKEN=…" },
-        { n: "3", title: "Point the webhook here", body: "Set the app's webhook for messages to:", code: "https://<your-node>/channels/whatsapp/webhook" },
-        { n: "4", title: "Message it", body: "Text the number like a contact: @assistant status of the books?" }
+        { n: "1", title: "Get a Cloud API number", body: "In Meta's WhatsApp Business Cloud API (developers.facebook.com), create an app, add the WhatsApp product, and note the phone number ID it gives you." },
+        { n: "2", title: "Export the token", body: "Generate a permanent access token and export it in the terminal where the node runs:", code: "export WA_TOKEN=…" },
+        { n: "3", title: "Pick a verify secret", body: "Invent any word — Meta echoes it back when you register the webhook. Export it too:", code: "export WA_VERIFY=my-secret-word" },
+        { n: "4", title: "Point the webhook here", body: "In the app's WhatsApp → Configuration, set the callback URL to the address below, the verify token to your secret word, and subscribe to the “messages” field:", code: "https://<your-node>/channels/whatsapp/webhook" },
+        { n: "5", title: "Save below, restart, message it", body: "Fill in the form below, restart the node, then text the number like a contact: @assistant status of the books?" }
       ] },
     { id: "teams", name: "Microsoft Teams", glyph: "MT", bg: BLUE_BG, fg: BLUE, ready: false,
       tagline: "@mention an agent in a channel or chat",
@@ -1505,13 +1519,13 @@ export const CONSOLE_HTML = `<!doctype html>
         { n: "2", title: "Invite it to your server", body: "OAuth2 → URL Generator: scope “bot”, permissions “Read Messages” and “Send Messages”. Open the generated link." },
         { n: "3", title: "Mention it", body: "In any channel the bot can see: @files read brief.txt. Replies land in the same channel." }
       ] },
-    { id: "github", name: "GitHub", glyph: "GH", bg: "#f1f3f4", fg: "#202124", ready: false,
+    { id: "github", name: "GitHub", glyph: "GH", bg: "#f1f3f4", fg: "#202124", ready: true,
       tagline: "Answers @mentions in issues and pull requests",
       steps: [
-        { n: "1", title: "Create a fine-grained token", body: "GitHub → Settings → Developer settings → Fine-grained tokens. Scope it to the one repo, with Issues and Pull requests read/write. Then:", code: "export GH_BOT_TOKEN=github_pat_…" },
-        { n: "2", title: "Add a webhook", body: "Repo → Settings → Webhooks, event “Issue comments”, pointed at:", code: "https://<your-node>/channels/github/webhook" },
-        { n: "3", title: "Set the webhook secret", body: "Use the webhook's secret field and export it:", code: "export GH_HOOK_SECRET=…" },
-        { n: "4", title: "Mention it", body: "Write @assistant explain this failure in any issue or PR comment." }
+        { n: "1", title: "Create a fine-grained token", body: "GitHub → Settings → Developer settings → Fine-grained tokens. Scope it to the one repo, with Issues and Pull requests read/write. Export it where the node runs:", code: "export GH_BOT_TOKEN=github_pat_…" },
+        { n: "2", title: "Add a webhook", body: "Repo → Settings → Webhooks → Add webhook. Content type application/json, event “Issue comments”, pointed at:", code: "https://<your-node>/channels/github/webhook" },
+        { n: "3", title: "Set the webhook secret", body: "Fill the webhook's secret field with any long random string and export the same value:", code: "export GH_HOOK_SECRET=…" },
+        { n: "4", title: "Save below, restart, mention it", body: "Fill in the form below, restart the node, then write @assistant explain this failure in any issue or PR comment — the reply lands in the thread." }
       ] },
     { id: "slack", name: "Slack", glyph: "SL", bg: RED_BG, fg: RED, ready: false,
       tagline: "@mention an agent in any channel it's in",
@@ -1522,6 +1536,76 @@ export const CONSOLE_HTML = `<!doctype html>
         { n: "4", title: "Mention it", body: "Invite the bot to a channel, then @assistant summarize this thread." }
       ] }
   ];
+  // One "Turn it on" form per configurable channel: which fields it
+  // needs, and how they map onto POST /channels. Values prefill from
+  // the saved config so reopening the screen shows what's set.
+  var CHANNEL_FORMS = {
+    telegram: {
+      note: "No public IP needed — Telegram is long-polled. Restart the node after saving.",
+      fields: [
+        { key: "tokenEnv", ph: "token env var, e.g. TG_BOT_TOKEN", def: "TG_BOT_TOKEN", flex: "1", required: true }
+      ]
+    },
+    gitlab: {
+      note: "Restart the node after saving. The webhook secret goes in its own env var too.",
+      fields: [
+        { key: "host", ph: "host, e.g. https://gitlab.example.com", flex: "2", required: true },
+        { key: "tokenEnv", ph: "token env var", def: "GL_BOT_TOKEN", flex: "1", required: true },
+        { key: "webhookSecretEnv", ph: "secret env var (optional)", flex: "1" }
+      ]
+    },
+    whatsapp: {
+      note: "Restart the node after saving. The webhook needs a public HTTPS address — a small reverse proxy or tunnel in front of the node works.",
+      fields: [
+        { key: "tokenEnv", ph: "token env var, e.g. WA_TOKEN", def: "WA_TOKEN", flex: "1", required: true },
+        { key: "phoneNumberId", ph: "phone number ID", flex: "1", required: true },
+        { key: "verifyTokenEnv", ph: "verify env var, e.g. WA_VERIFY", flex: "1" }
+      ]
+    },
+    github: {
+      note: "Restart the node after saving. The webhook needs a public HTTPS address — a small reverse proxy or tunnel in front of the node works.",
+      fields: [
+        { key: "tokenEnv", ph: "token env var, e.g. GH_BOT_TOKEN", def: "GH_BOT_TOKEN", flex: "1", required: true },
+        { key: "webhookSecretEnv", ph: "secret env var (optional)", flex: "1" }
+      ]
+    }
+  };
+  function channelForm(chn, form) {
+    var box = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
+    box.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
+    var row = css(E("div"), { display: "flex", gap: "10px", flexWrap: "wrap" });
+    var saved = ((S.status && S.status.channelsConfig) || {})[chn.id] || {};
+    var inputs = {};
+    form.fields.forEach(function (f) {
+      var formKey = chn.id + "." + f.key;
+      var inp = E("input", "input");
+      css(inp, { flex: f.flex, height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "140px" });
+      inp.placeholder = f.ph;
+      inp.value = S.form[formKey] != null ? S.form[formKey] : (saved[f.key] || f.def || "");
+      inp.oninput = function () { S.form[formKey] = inp.value; };
+      inputs[f.key] = inp;
+      row.appendChild(inp);
+    });
+    var save = B("", "Save", function () {
+      var body = { kind: chn.id };
+      for (var i = 0; i < form.fields.length; i++) {
+        var f = form.fields[i];
+        var v = inputs[f.key].value.trim();
+        if (f.required && !v) { toast(chn.name + " needs " + f.ph); return; }
+        if (v) body[f.key] = v;
+      }
+      api("POST", "/channels", body).then(function () {
+        toast("Saved — restart the node to start " + chn.name);
+        refresh();
+      })["catch"](function (e) { toast(e.message); });
+    });
+    css(save, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+    row.appendChild(save);
+    box.appendChild(row);
+    box.appendChild(css(E("div", "hint", form.note), { marginTop: "10px" }));
+    return box;
+  }
+
   function channelPill(chn) {
     if (!chn.ready) return { text: "Soon", fg: AMBER, bg: AMBER_BG };
     if (channelRunning(chn.id)) return { text: "On", fg: GREEN_D, bg: GREEN_BG };
@@ -1611,60 +1695,8 @@ export const CONSOLE_HTML = `<!doctype html>
     });
     d.appendChild(steps);
 
-    if (chn.id === "telegram") {
-      var box = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
-      box.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
-      var row2 = css(E("div"), { display: "flex", gap: "10px" });
-      var inp = E("input", "input");
-      css(inp, { flex: "1", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "0" });
-      inp.placeholder = "token env var, e.g. TG_BOT_TOKEN";
-      var cfg = (S.status && S.status.channelsConfig) || {};
-      inp.value = S.form.tgEnv != null ? S.form.tgEnv : ((cfg.telegram && cfg.telegram.tokenEnv) || "TG_BOT_TOKEN");
-      inp.oninput = function () { S.form.tgEnv = inp.value; };
-      var save = B("", "Save", function () {
-        var v = inp.value.trim();
-        if (!v) { toast("Name the env var holding the bot token"); return; }
-        api("POST", "/channels", { kind: "telegram", tokenEnv: v }).then(function () {
-          toast("Saved — restart the node to start Telegram");
-          refresh();
-        })["catch"](function (e) { toast(e.message); });
-      });
-      css(save, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
-      row2.appendChild(inp); row2.appendChild(save);
-      box.appendChild(row2);
-      box.appendChild(css(E("div", "hint", "No public IP needed — Telegram is long-polled. Restart the node after saving."), { marginTop: "10px" }));
-      d.appendChild(box);
-    }
-
-    if (chn.id === "gitlab") {
-      var box2 = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
-      box2.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
-      var row3 = css(E("div"), { display: "flex", gap: "10px", flexWrap: "wrap" });
-      var cfg2 = (S.status && S.status.channelsConfig) || {};
-      var host = E("input", "input");
-      css(host, { flex: "2", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "160px" });
-      host.placeholder = "host, e.g. https://gitlab.example.com";
-      host.value = S.form.glHost != null ? S.form.glHost : ((cfg2.gitlab && cfg2.gitlab.host) || "");
-      host.oninput = function () { S.form.glHost = host.value; };
-      var envv = E("input", "input");
-      css(envv, { flex: "1", height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "120px" });
-      envv.placeholder = "token env var";
-      envv.value = S.form.glEnv != null ? S.form.glEnv : ((cfg2.gitlab && cfg2.gitlab.tokenEnv) || "");
-      envv.oninput = function () { S.form.glEnv = envv.value; };
-      var save2 = B("", "Save", function () {
-        var hv = host.value.trim(), ev = envv.value.trim();
-        if (!hv || !ev) { toast("GitLab needs a host and a token env var"); return; }
-        api("POST", "/channels", { kind: "gitlab", host: hv, tokenEnv: ev }).then(function () {
-          toast("Saved — restart the node to start GitLab");
-          refresh();
-        })["catch"](function (e) { toast(e.message); });
-      });
-      css(save2, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
-      row3.appendChild(host); row3.appendChild(envv); row3.appendChild(save2);
-      box2.appendChild(row3);
-      box2.appendChild(css(E("div", "hint", "Restart the node after saving. The webhook secret goes in its own env var too."), { marginTop: "10px" }));
-      d.appendChild(box2);
-    }
+    var form = CHANNEL_FORMS[chn.id];
+    if (form) d.appendChild(channelForm(chn, form));
 
     if (!chn.ready) {
       var soon = E("div", null, "This channel ships soon — every adapter shares the same 4-method contract, so setup will look exactly like the steps above.");
@@ -1774,6 +1806,126 @@ export const CONSOLE_HTML = `<!doctype html>
       })["catch"](function (e2) { save.disabled = false; toast(e2.message); });
     });
     d.appendChild(save);
+    return d;
+  };
+
+  // ============ HELP & GUIDES ============
+  // Straightforward, numbered, no jargon. Every guide ends where the
+  // reader can act — a button into the actual screen.
+  var GUIDE_ACTIONS = {
+    invite: function () { startInvite(); },
+    join: function () { go("join"); },
+    home: function () { goHome(); },
+    account: function () { openAccount(); },
+    networkHelp: function () { go("networkHelp"); },
+    agents: function () { go("agents"); },
+    activity: function () { go("activity"); },
+    advanced: function () { go("advanced"); },
+    runtimes: function () { go("runtimes"); }
+  };
+  var GUIDES = [
+    { id: "start", glyph: "1", bg: BLUE_BG, fg: BLUE, title: "Start here", tagline: "What agentina is, in four steps",
+      steps: [
+        { title: "Two people, two machines", body: "You and one other person each run agentina on your own computer. There is no company server in the middle — your machines talk directly." },
+        { title: "Connecting shares nothing", body: "An invite link only introduces the two machines. Until you share something, the other person can do exactly nothing." },
+        { title: "Share one thing at a time", body: "A folder, an agent, a server, a repository — you pick how much they can do and for how long. Your machine enforces it; one tap stops it." },
+        { title: "Everything is on the record", body: "Every use and every denial lands in Activity — on both sides. No silent access, ever." }
+      ],
+      links: [{ label: "Invite someone →", action: "invite" }, { label: "See your activity →", action: "activity" }] },
+    { id: "connect", glyph: "2", bg: GREEN_BG, fg: GREEN_D, title: "Connect with someone", tagline: "One invite link, one paste",
+      steps: [
+        { title: "One of you invites", body: "Tap “Invite someone”. You get a link that works once and expires in 15 minutes — safe to send over any chat." },
+        { title: "The other one joins", body: "They open agentina on their machine, tap “I have an invite link”, and paste it. That's the whole pairing." },
+        { title: "Different machines? Get reachable first", body: "Your computer needs an address the other machine can dial. Tailscale (free) is the easiest way — the network guide walks you through it." },
+        { title: "Test it", body: "Open the contact and tap “test connection” — you should see an answer in milliseconds." }
+      ],
+      links: [{ label: "Invite someone →", action: "invite" }, { label: "I have an invite link →", action: "join" }, { label: "Get reachable — the network guide →", action: "networkHelp" }] },
+    { id: "share", glyph: "3", bg: AMBER_BG, fg: AMBER, title: "Share something safely", tagline: "Exactly this, nothing else, stop anytime",
+      steps: [
+        { title: "Open the contact, tap “Share something”", body: "Pick what to share: a folder, one of your agents, a server, or a repository." },
+        { title: "Pick how much they can do", body: "“Look only” means look only — your machine refuses writes, not their good manners." },
+        { title: "Pick how long", body: "An hour, a day, a week — when time's up the share self-destructs. Or keep it until you stop it." },
+        { title: "Stop it in one tap", body: "On the contact screen, every share has a Stop button. Their very next use is denied." }
+      ],
+      links: [{ label: "Go to your people →", action: "home" }] },
+    { id: "ask", glyph: "4", bg: BLUE_BG, fg: BLUE, title: "Ask their agents", tagline: "Only what they shared — and they see every ask",
+      steps: [
+        { title: "The chips are what they shared", body: "On the Ask screen, each chip is one thing they shared with you. Pick one, then write your message." },
+        { title: "Plain language works", body: "Try “read brief.txt”, “list”, or just describe what you need — their AI agent answers from inside its folder." },
+        { title: "Denials are normal, not errors", body: "Ask for something outside the share and the reply is an honest “denied”. It's logged on both sides — that's the system working." }
+      ],
+      links: [{ label: "Go to your people →", action: "home" }] },
+    { id: "agents", glyph: "5", bg: GREEN_BG, fg: GREEN_D, title: "Your agents & skills", tagline: "AI workers, jailed to one folder each",
+      steps: [
+        { title: "Create one in “My agents”", body: "Give it a name, a folder, and a purpose in plain language. The folder is its whole world — it cannot see outside." },
+        { title: "Skills are markdown files", body: "Drop .md files into workspace/skills/ — the agent reads them on its next answer. No restart, no config." },
+        { title: "Toggle skills on and off", body: "In the agent's edit screen, switch individual skills off without deleting the files." },
+        { title: "Share it like anything else", body: "An agent only answers a contact after you share it with them — with the same look-only/time-box controls." }
+      ],
+      links: [{ label: "Open My agents →", action: "agents" }, { label: "AI runtimes — install guides →", action: "runtimes" }] },
+    { id: "channels", glyph: "6", bg: AMBER_BG, fg: AMBER, title: "Talk from your chat apps", tagline: "WhatsApp, Telegram, GitHub, GitLab",
+      steps: [
+        { title: "Connect a channel once", body: "In Advanced → Channels, each card has numbered setup steps and a “Turn it on” form. Tokens live in environment variables, never in files." },
+        { title: "Mention an agent anywhere", body: "Write @assistant summarize this in a chat, an issue, or a PR comment — the reply comes back in the same thread." },
+        { title: "The rules follow the mention", body: "A mention can reach an agent on the other side of the trust boundary. Their shares still decide — a denial comes back as the reply, and both activity logs record it." }
+      ],
+      links: [{ label: "Open Channels →", action: "advanced" }] },
+    { id: "safety", glyph: "7", bg: RED_BG, fg: RED, title: "How you're protected", tagline: "The whole security model on one page",
+      steps: [
+        { title: "No accounts, no cloud", body: "Your machine talks to theirs directly. Nothing you share passes through anyone else's servers." },
+        { title: "Every request is attributed", body: "Pairing mints two separate credentials — one per direction. A request without a valid one is rejected and logged." },
+        { title: "Shares are enforced, not promised", body: "Look-only, folder boundaries, time limits — your machine refuses violations. Sneaky “..” paths fail, guaranteed." },
+        { title: "The log can't be edited", body: "Activity is append-only, kept on both sides, and includes every denial. Stopping a share takes one tap and works instantly." }
+      ],
+      links: [{ label: "See your activity →", action: "activity" }] }
+  ];
+  SCREENS.help = function () {
+    var d = screenRoot("help");
+    d.appendChild(hdr());
+    d.appendChild(E("div", "title", "Help & guides"));
+    d.appendChild(E("div", "sub2", "Short, numbered, no jargon. Each one ends where you can act."));
+    var list = E("div", "stack-sm");
+    GUIDES.forEach(function (g) {
+      var card = B("card", "", function () { S.guideId = g.id; go("guide"); });
+      card.innerHTML =
+        "<div class='glyph' style='width:44px;height:44px;background:" + g.bg + ";color:" + g.fg + ";font-size:16px'>" + g.glyph + "</div>" +
+        "<div style='flex:1;min-width:0'><div style='font-size:17px;font-weight:700'>" + esc(g.title) + "</div>" +
+        "<div style='font-size:13.5px;color:#5f6368;margin-top:2px'>" + esc(g.tagline) + "</div></div>" +
+        "<div class='chev'>›</div>";
+      list.appendChild(card);
+    });
+    d.appendChild(list);
+    d.appendChild(css(E("div", "hint", "Looking for the network setup? It has its own plain-language guide."), { marginTop: "16px" }));
+    var net = B("linkbtn", "Getting connected — the network guide →", function () { go("networkHelp"); });
+    css(net, { alignSelf: "flex-start", padding: "8px 0" });
+    d.appendChild(net);
+    return d;
+  };
+  SCREENS.guide = function () {
+    var d = screenRoot("guide");
+    var g = GUIDES.filter(function (x) { return x.id === S.guideId; })[0] || GUIDES[0];
+    d.appendChild(hdr());
+    var head = css(E("div"), { display: "flex", alignItems: "center", gap: "16px", margin: "8px 0 24px" });
+    head.innerHTML =
+      "<div class='glyph' style='width:60px;height:60px;border-radius:18px;background:" + g.bg + ";color:" + g.fg + ";font-size:22px'>" + g.glyph + "</div>" +
+      "<div><div style='font-size:26px;font-weight:800;letter-spacing:-0.5px'>" + esc(g.title) + "</div>" +
+      "<div style='font-size:15px;color:#5f6368;margin-top:2px'>" + esc(g.tagline) + "</div></div>";
+    d.appendChild(head);
+    var steps = E("div", "stack");
+    g.steps.forEach(function (st, i) {
+      var row = css(E("div"), { display: "flex", gap: "16px", background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "18px 20px" });
+      row.innerHTML =
+        "<div style='width:36px;height:36px;border-radius:50%;background:" + g.bg + ";color:" + g.fg + ";display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;flex:none'>" + (i + 1) + "</div>" +
+        "<div style='flex:1;min-width:0'><div style='font-size:16.5px;font-weight:700;margin-bottom:4px'>" + esc(st.title) + "</div>" +
+        "<div style='font-size:14.5px;color:#5f6368;line-height:1.55'>" + esc(st.body) + "</div></div>";
+      steps.appendChild(row);
+    });
+    d.appendChild(steps);
+    var links = css(E("div"), { display: "flex", flexDirection: "column", alignItems: "flex-start", marginTop: "16px" });
+    (g.links || []).forEach(function (l) {
+      links.appendChild(B("linkbtn", esc(l.label), GUIDE_ACTIONS[l.action] || goHome));
+    });
+    d.appendChild(links);
     return d;
   };
 

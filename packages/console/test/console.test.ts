@@ -34,6 +34,9 @@ describe("console page integrity", () => {
       "SCREENS.agentEdit", "SCREENS.agentNew", "SCREENS.runtimes",
       "SCREENS.activity", "SCREENS.advanced", "SCREENS.channel",
       "SCREENS.account", "SCREENS.networkHelp",
+      "SCREENS.help", "SCREENS.guide",
+      // all four configurable channels have turn-it-on forms
+      "whatsapp:", "github:", "telegram:", "gitlab:",
       // key copy and wiring
       "Ask their agents", "Share something", "agentina://join/",
       "/environment/refresh", "/agentina/v1",
