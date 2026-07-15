@@ -285,9 +285,23 @@ export const CONSOLE_HTML = `<!doctype html>
   function channelRunning(id) {
     return ((S.status && S.status.channels) || []).indexOf(id) >= 0;
   }
-  function channelConfigured(id) {
-    var cfg = (S.status && S.status.channelsConfig) || {};
-    return Boolean(cfg[id]);
+  function bindings() {
+    return (S.status && S.status.channelBindings) || [];
+  }
+  function channelConfigured(kind) {
+    return bindings().some(function (b) { return b.kind === kind; });
+  }
+  function bindingFor(kind, agentId) {
+    return bindings().filter(function (b) {
+      return b.kind === kind && (b.agentId || null) === (agentId || null);
+    })[0];
+  }
+  // Each connection keeps its token under its own env name, so two
+  // Telegram bots (two agents) never collide: TG_BOT_TOKEN_BOOKKEEPER.
+  function secretName(base, agentId) {
+    if (!agentId) return base;
+    var suffix = String(agentId).toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return base + "_" + (suffix || "AGENT");
   }
   function claudeFound() {
     var e = env();
@@ -309,29 +323,36 @@ export const CONSOLE_HTML = `<!doctype html>
     var urlPublic = url.indexOf("127.0.0.1") < 0 && url.indexOf("localhost") < 0;
     var e = env();
     var ip = e && e.network && e.network.tailscale && e.network.tailscale.ip;
-    return {
-      reachable: boundWide && urlPublic,
-      ip: ip || null,
-      cmd: "agentina start --bind " + (ip || "<your-network-ip>")
-    };
+    return { reachable: boundWide && urlPublic, ip: ip || null };
+  }
+  /** Set the reachable address in one call — the node re-listens by
+   *  itself, no terminal, no restart. Used by the one-tap buttons. */
+  function applyAddress(address, after) {
+    api("POST", "/account", { url: address }).then(function () {
+      toast("Done — you're reachable at " + address + " now");
+      refresh().then(function () { if (after) after(); });
+    })["catch"](function (e) { toast(e.message); });
   }
   function connectivityCard() {
     var conn = connectivity();
     var box = E("div");
     css(box, { background: AMBER_BG, border: "2px solid #FFE08A", borderRadius: "16px", padding: "16px 18px", marginBottom: "20px" });
-    box.appendChild(css(E("div", null, "Inviting someone on another machine? One step first."), { fontSize: "15px", fontWeight: "700", lineHeight: "1.45", marginBottom: "6px" }));
+    box.appendChild(css(E("div", null, "Inviting someone on another machine? One tap first."), { fontSize: "15px", fontWeight: "700", lineHeight: "1.45", marginBottom: "6px" }));
     box.appendChild(css(E("div", null,
-      "Right now this machine only answers to itself, so the link below works for same-machine demos only. To be reachable, restart agentina with your network address" + (conn.ip ? " — Tailscale is already here" : "") + ":"
+      "Right now this machine only answers to itself, so the link below works for same-machine demos only." +
+      (conn.ip ? " Tailscale is already on this machine — use its address and agentina applies it instantly:" : " Set your network address and agentina applies it instantly — no restart.")
     ), { fontSize: "14px", color: "#5f6368", lineHeight: "1.5", marginBottom: "10px" }));
-    var row = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" });
-    var code = E("code", "mono", esc(conn.cmd));
-    css(code, { fontSize: "12.5px", background: "#ffffff", border: "1px solid #F5DE9B", borderRadius: "8px", padding: "6px 10px" });
-    row.appendChild(code);
-    var cp = B("", "Copy", function () { copyText(conn.cmd, "Copied — run it where agentina lives"); });
-    css(cp, { border: "none", background: "none", color: AMBER, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
-    row.appendChild(cp);
-    box.appendChild(row);
-    var links = css(E("div"), { display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "6px" });
+    if (conn.ip) {
+      var useIp = B("", "Use my Tailscale address — " + esc(conn.ip), function () {
+        applyAddress(conn.ip, function () {
+          // The link on screen embeds the old address — mint a fresh one.
+          api("POST", "/invites").then(function (r) { S.inviteLink = r.link; render(); })["catch"](function () { render(); });
+        });
+      });
+      css(useIp, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14.5px", fontWeight: "700", cursor: "pointer", padding: "10px 16px", boxShadow: "0 3px 0 " + BLUE_D });
+      box.appendChild(useIp);
+    }
+    var links = css(E("div"), { display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "8px" });
     var mk = function (label, fn) {
       var b = B("", label, fn);
       css(b, { border: "none", background: "none", color: AMBER, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
@@ -819,27 +840,28 @@ export const CONSOLE_HTML = `<!doctype html>
       telegram: "from your Telegram bot",
       gitlab: "in a GitLab issue or MR comment",
       whatsapp: "from WhatsApp — text the number like a contact",
-      github: "in a GitHub issue or PR comment"
+      github: "in a GitHub issue or PR comment",
+      discord: "in any Discord channel the bot can see",
+      slack: "in any Slack channel the bot is in"
     };
-    [{ key: "console", label: "Console" }, { key: "whatsapp", label: "WhatsApp" }, { key: "telegram", label: "Telegram" }, { key: "github", label: "GitHub" }, { key: "gitlab", label: "GitLab" }].forEach(function (cc) {
-      var b = B("chip-sm" + (convKey === cc.key ? " sel" : ""), esc(cc.label), function () {
-        if (cc.key !== "console" && !channelRunning(cc.key) && !channelConfigured(cc.key)) {
-          toast("Set up " + cc.label + " first");
-          S.channelId = cc.key;
-          go("channel");
-          return;
-        }
+    var CONV_LABEL = { console: "Console", whatsapp: "WhatsApp", telegram: "Telegram", github: "GitHub", gitlab: "GitLab", discord: "Discord", slack: "Slack" };
+    // Console always; then only channels that are actually set up — six
+    // dormant chips would be noise. One shortcut covers the rest.
+    var convChips = [{ key: "console" }];
+    CHANNELS.forEach(function (ch) {
+      if (ch.ready && (channelRunning(ch.id) || channelConfigured(ch.id))) convChips.push({ key: ch.id });
+    });
+    convChips.forEach(function (cc) {
+      var b = B("chip-sm" + (convKey === cc.key ? " sel" : ""), esc(CONV_LABEL[cc.key] || cc.key), function () {
         S.conv[c.name] = cc.key;
         render();
       });
       convRow.appendChild(b);
     });
+    convRow.appendChild(B("chip-sm", "+ Set up a channel", function () { go("advanced"); }));
     d.appendChild(convRow);
     if (convKey !== "console") {
-      var label = convKey.charAt(0).toUpperCase() + convKey.slice(1);
-      if (convKey === "whatsapp") label = "WhatsApp";
-      if (convKey === "github") label = "GitHub";
-      if (convKey === "gitlab") label = "GitLab";
+      var label = CONV_LABEL[convKey] || convKey;
       var noteText = label + " is connected — @mention an agent " + (CONV_WHERE[convKey] || "there") + " and it reaches " + c.name + "'s side too. Their rules still decide, and every ask lands in Activity.";
       var note = E("div", null, esc(noteText));
       css(note, { background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "14px", padding: "12px 16px", fontSize: "14px", color: BLUE_D, fontWeight: "600", lineHeight: "1.5", marginBottom: "12px" });
@@ -1256,6 +1278,39 @@ export const CONSOLE_HTML = `<!doctype html>
       d.appendChild(blank);
     }
 
+    // Channels — this agent's own faces on the outside world. Bind a
+    // bot/number to it and talking to that bot IS talking to this agent.
+    var ebCh = E("div", "eyebrow", "Channels");
+    css(ebCh, { marginTop: "24px" });
+    d.appendChild(ebCh);
+    d.appendChild(css(E("div", null, "Give " + esc(ed.id) + " its own bot or number — message it there like a person, no @mention needed. Works with zero contacts: your own assistant, on your own machine."), { fontSize: "14px", color: "#5f6368", lineHeight: "1.5", marginBottom: "12px" }));
+    var mineCh = bindings().filter(function (b) { return b.agentId === ed.id; });
+    if (mineCh.length) {
+      var chList = css(E("div", "stack-sm"), { marginBottom: "12px" });
+      mineCh.forEach(function (b) {
+        var chn = CHANNELS.filter(function (x) { return x.id === b.kind; })[0] || { name: b.kind, glyph: "?", bg: BLUE_BG, fg: BLUE };
+        var row = E("div", "rowcard");
+        row.innerHTML =
+          "<div class='glyph' style='width:40px;height:40px;border-radius:12px;background:" + chn.bg + ";color:" + chn.fg + ";font-size:13px'>" + chn.glyph + "</div>" +
+          "<div style='flex:1;min-width:0'><div style='font-size:15px;font-weight:700'>" + esc(chn.name) + "</div></div>" +
+          "<div class='pill' style='color:" + (b.running ? GREEN_D : AMBER) + ";background:" + (b.running ? GREEN_BG : AMBER_BG) + "'>" + (b.running ? "On" : "Not running") + "</div>";
+        var open = B("", "Open", function () { S.channelId = b.kind; S.chAgent = ed.id; go("channel"); });
+        css(open, { border: "2px solid #dadce0", borderRadius: "12px", background: "#ffffff", color: BLUE, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 14px", flex: "none" });
+        row.appendChild(open);
+        chList.appendChild(row);
+      });
+      d.appendChild(chList);
+    }
+    var connectRow = E("div", "chips");
+    CHANNELS.filter(function (chn) { return chn.ready && !mineCh.some(function (b) { return b.kind === chn.id; }); }).forEach(function (chn) {
+      connectRow.appendChild(B("sug", "+ " + esc(chn.name), function () {
+        S.channelId = chn.id;
+        S.chAgent = ed.id;
+        go("channel");
+      }));
+    });
+    d.appendChild(connectRow);
+
     var save = B("btn btn-blue", "Save changes", function () {
       if (!(ed.workspace || "").trim()) { toast("Every agent needs a workspace folder"); return; }
       save.disabled = true;
@@ -1481,136 +1536,281 @@ export const CONSOLE_HTML = `<!doctype html>
       tagline: "DM the bot, or @mention an agent in a group",
       steps: [
         { n: "1", title: "Create a bot", body: "Message @BotFather on Telegram and send /newbot. Pick any name — this bot is yours alone." },
-        { n: "2", title: "Copy the token", body: "BotFather replies with a token. Treat it like a password — it never goes in a file." },
-        { n: "3", title: "Put it in an environment variable", body: "In the terminal where the node runs:", code: "export TG_BOT_TOKEN=110201543:AAHdq…" },
-        { n: "4", title: "Save the variable name below", body: "agentina reads the token from the variable at startup — it only stores the name." },
-        { n: "5", title: "Talk to it", body: "DM the bot directly, or add it to a group and write @files read brief.txt. Mentions can cross the trust boundary — the other side's rules still decide." }
+        { n: "2", title: "Copy the token it replies with", body: "You'll paste it in the form below — it stays on this machine." },
+        { n: "3", title: "Save below — it starts right away", body: "No restart, no public address needed. Then DM the bot, or add it to a group and write @files read brief.txt. Mentions can cross the trust boundary — the other side's rules still decide." }
       ] },
-    { id: "gitlab", name: "GitLab", glyph: "GL", bg: AMBER_BG, fg: AMBER, ready: true,
+    { id: "gitlab", name: "GitLab", glyph: "GL", bg: AMBER_BG, fg: AMBER, ready: true, hook: "/channels/gitlab/webhook",
       tagline: "Answers @mentions in issue and MR comments",
       steps: [
         { n: "1", title: "Create a bot user", body: "In your GitLab, add a user like agentina-bot and give it access to the project." },
-        { n: "2", title: "Create its token", body: "Signed in as the bot: Settings → Access tokens, scope “api”. Then in the node's terminal:", code: "export GL_BOT_TOKEN=glpat-…" },
-        { n: "3", title: "Add a webhook", body: "Project → Settings → Webhooks. Tick “Comments (note events)” and point it at:", code: "https://<your-node>/channels/gitlab/webhook" },
-        { n: "4", title: "Set the webhook secret", body: "Give the webhook a secret token and export it too:", code: "export GL_HOOK_SECRET=…" },
+        { n: "2", title: "Create its token", body: "Signed in as the bot: Settings → Access tokens, scope “api”. Copy the token — you'll paste it below." },
+        { n: "3", title: "Add a webhook", body: "Project → Settings → Webhooks. Tick “Comments (note events)” and point it at your webhook address — it's shown below with a copy button." },
+        { n: "4", title: "Give the webhook a secret", body: "Invent a long random phrase, put it in the webhook's “Secret token” field, and paste the same phrase below." },
         { n: "5", title: "Mention it", body: "Write @assistant summarize this MR in any issue or MR comment — the bot replies right in the thread." }
       ] },
-    { id: "whatsapp", name: "WhatsApp", glyph: "WA", bg: GREEN_BG, fg: GREEN_D, ready: true,
+    { id: "whatsapp", name: "WhatsApp", glyph: "WA", bg: GREEN_BG, fg: GREEN_D, ready: true, hook: "/channels/whatsapp/webhook",
       tagline: "Message an agent like any contact",
       steps: [
         { n: "1", title: "Get a Cloud API number", body: "In Meta's WhatsApp Business Cloud API (developers.facebook.com), create an app, add the WhatsApp product, and note the phone number ID it gives you." },
-        { n: "2", title: "Export the token", body: "Generate a permanent access token and export it in the terminal where the node runs:", code: "export WA_TOKEN=…" },
-        { n: "3", title: "Pick a verify secret", body: "Invent any word — Meta echoes it back when you register the webhook. Export it too:", code: "export WA_VERIFY=my-secret-word" },
-        { n: "4", title: "Point the webhook here", body: "In the app's WhatsApp → Configuration, set the callback URL to the address below, the verify token to your secret word, and subscribe to the “messages” field:", code: "https://<your-node>/channels/whatsapp/webhook" },
-        { n: "5", title: "Save below, restart, message it", body: "Fill in the form below, restart the node, then text the number like a contact: @assistant status of the books?" }
+        { n: "2", title: "Copy the access token", body: "Generate a permanent access token in the app — you'll paste it below." },
+        { n: "3", title: "Invent a verify word", body: "Any word. Type it in the form below, and give Meta the same word in the next step." },
+        { n: "4", title: "Point the webhook here", body: "In the app's WhatsApp → Configuration: callback URL = your webhook address (shown below, with a copy button), verify token = your word, and subscribe to the “messages” field." },
+        { n: "5", title: "Save below and message it", body: "Text the number like a contact: @assistant status of the books?" }
       ] },
     { id: "teams", name: "Microsoft Teams", glyph: "MT", bg: BLUE_BG, fg: BLUE, ready: false,
       tagline: "@mention an agent in a channel or chat",
       steps: [
         { n: "1", title: "Register a bot", body: "In Azure Bot Service, create a bot registration and note its App ID and secret." },
-        { n: "2", title: "Export the credentials", body: "In the node's terminal:", code: "export TEAMS_APP_ID=… TEAMS_APP_SECRET=…" },
-        { n: "3", title: "Point the messaging endpoint here", body: "Set the bot's endpoint to:", code: "https://<your-node>/channels/teams/messages" },
-        { n: "4", title: "Add it to a team", body: "Sideload the app package, then @assistant summarize this thread in any channel." }
+        { n: "2", title: "Point the messaging endpoint here", body: "Set the bot's endpoint to your node's /channels/teams/messages address." },
+        { n: "3", title: "Add it to a team", body: "Sideload the app package, then @assistant summarize this thread in any channel." }
       ] },
-    { id: "discord", name: "Discord", glyph: "DC", bg: BLUE_BG, fg: BLUE, ready: false,
+    { id: "discord", name: "Discord", glyph: "DC", bg: BLUE_BG, fg: BLUE, ready: true,
       tagline: "@mention an agent in any server it's invited to",
       steps: [
-        { n: "1", title: "Create an application", body: "discord.com/developers → New Application → Bot. Copy the bot token:", code: "export DISCORD_BOT_TOKEN=…" },
-        { n: "2", title: "Invite it to your server", body: "OAuth2 → URL Generator: scope “bot”, permissions “Read Messages” and “Send Messages”. Open the generated link." },
-        { n: "3", title: "Mention it", body: "In any channel the bot can see: @files read brief.txt. Replies land in the same channel." }
+        { n: "1", title: "Create an application", body: "discord.com/developers → New Application → Bot. Copy the bot token — you'll paste it below." },
+        { n: "2", title: "Allow it to read messages", body: "Still under Bot: turn on the “Message Content Intent” toggle — without it Discord hides message text from the bot." },
+        { n: "3", title: "Invite it to your server", body: "OAuth2 → URL Generator: scope “bot”, permissions “View Channels” and “Send Messages”. Open the generated link and pick your server." },
+        { n: "4", title: "Save below — it starts right away", body: "No public address needed — the node connects out to Discord (needs Node 22+). DM the bot, or write @files read brief.txt in a channel; replies land in the same place." }
       ] },
-    { id: "github", name: "GitHub", glyph: "GH", bg: "#f1f3f4", fg: "#202124", ready: true,
+    { id: "github", name: "GitHub", glyph: "GH", bg: "#f1f3f4", fg: "#202124", ready: true, hook: "/channels/github/webhook",
       tagline: "Answers @mentions in issues and pull requests",
       steps: [
-        { n: "1", title: "Create a fine-grained token", body: "GitHub → Settings → Developer settings → Fine-grained tokens. Scope it to the one repo, with Issues and Pull requests read/write. Export it where the node runs:", code: "export GH_BOT_TOKEN=github_pat_…" },
-        { n: "2", title: "Add a webhook", body: "Repo → Settings → Webhooks → Add webhook. Content type application/json, event “Issue comments”, pointed at:", code: "https://<your-node>/channels/github/webhook" },
-        { n: "3", title: "Set the webhook secret", body: "Fill the webhook's secret field with any long random string and export the same value:", code: "export GH_HOOK_SECRET=…" },
-        { n: "4", title: "Save below, restart, mention it", body: "Fill in the form below, restart the node, then write @assistant explain this failure in any issue or PR comment — the reply lands in the thread." }
+        { n: "1", title: "Create a fine-grained token", body: "GitHub → Settings → Developer settings → Fine-grained tokens. Scope it to the one repo, with Issues and Pull requests read/write. Copy it — you'll paste it below." },
+        { n: "2", title: "Add a webhook", body: "Repo → Settings → Webhooks → Add webhook. Content type application/json, event “Issue comments”, pointed at your webhook address — shown below with a copy button." },
+        { n: "3", title: "Give the webhook a secret", body: "Invent a long random phrase, put it in the webhook's “Secret” field, and paste the same phrase below." },
+        { n: "4", title: "Save below and mention it", body: "Write @assistant explain this failure in any issue or PR comment — the reply lands in the thread." }
       ] },
-    { id: "slack", name: "Slack", glyph: "SL", bg: RED_BG, fg: RED, ready: false,
+    { id: "slack", name: "Slack", glyph: "SL", bg: RED_BG, fg: RED, ready: true, hook: "/channels/slack/events",
       tagline: "@mention an agent in any channel it's in",
       steps: [
-        { n: "1", title: "Create a Slack app", body: "api.slack.com/apps → Create New App. Add the bot scopes app_mentions:read and chat:write." },
-        { n: "2", title: "Install & export the token", body: "Install to your workspace, then in the node's terminal:", code: "export SLACK_BOT_TOKEN=xoxb-…" },
-        { n: "3", title: "Enable events", body: "Turn on Event Subscriptions, subscribe to app_mention, and point the request URL at:", code: "https://<your-node>/channels/slack/events" },
-        { n: "4", title: "Mention it", body: "Invite the bot to a channel, then @assistant summarize this thread." }
+        { n: "1", title: "Create a Slack app", body: "api.slack.com/apps → Create New App. Under OAuth & Permissions add the bot scopes app_mentions:read and chat:write." },
+        { n: "2", title: "Install it and copy the bot token", body: "Install the app to your workspace; the bot token starts with xoxb- — you'll paste it below." },
+        { n: "3", title: "Copy the signing secret too", body: "From the app's Basic Information page — it lets the node reject forged events. Paste it below." },
+        { n: "4", title: "Save below FIRST, then enable events", body: "Slack checks the address the moment you enter it. Turn on Event Subscriptions, subscribe to the app_mention bot event, and use your events address — shown below with a copy button." },
+        { n: "5", title: "Mention it", body: "Invite the bot to a channel, then @assistant summarize this thread — the reply lands in the same thread." }
       ] }
   ];
-  // One "Turn it on" form per configurable channel: which fields it
-  // needs, and how they map onto POST /channels. Values prefill from
-  // the saved config so reopening the screen shows what's set.
+  // One "Turn it on" form per channel. Secret fields take the pasted
+  // VALUE (stored on this machine, owner-only, via POST /secrets) —
+  // nobody has to open a terminal. The config only ever names the env
+  // var, and a real environment variable still overrides the file.
   var CHANNEL_FORMS = {
     telegram: {
-      note: "No public IP needed — Telegram is long-polled. Restart the node after saving.",
+      note: "Starts the moment you save — Telegram needs no public address.",
       fields: [
-        { key: "tokenEnv", ph: "token env var, e.g. TG_BOT_TOKEN", def: "TG_BOT_TOKEN", flex: "1", required: true }
+        { key: "tokenEnv", secret: "TG_BOT_TOKEN", ph: "bot token from @BotFather", flex: "1", required: true }
       ]
     },
     gitlab: {
-      note: "Restart the node after saving. The webhook secret goes in its own env var too.",
+      note: "Starts when you save. The webhook address above must be reachable from your GitLab.",
       fields: [
-        { key: "host", ph: "host, e.g. https://gitlab.example.com", flex: "2", required: true },
-        { key: "tokenEnv", ph: "token env var", def: "GL_BOT_TOKEN", flex: "1", required: true },
-        { key: "webhookSecretEnv", ph: "secret env var (optional)", flex: "1" }
+        { key: "host", ph: "https://gitlab.example.com", flex: "2", required: true },
+        { key: "tokenEnv", secret: "GL_BOT_TOKEN", ph: "bot token (glpat-…)", flex: "1", required: true },
+        { key: "webhookSecretEnv", secret: "GL_HOOK_SECRET", ph: "webhook secret (optional)", flex: "1" }
       ]
     },
     whatsapp: {
-      note: "Restart the node after saving. The webhook needs a public HTTPS address — a small reverse proxy or tunnel in front of the node works.",
+      note: "Starts when you save. Meta calls the webhook address above — it must be public HTTPS.",
       fields: [
-        { key: "tokenEnv", ph: "token env var, e.g. WA_TOKEN", def: "WA_TOKEN", flex: "1", required: true },
+        { key: "tokenEnv", secret: "WA_TOKEN", ph: "access token from Meta", flex: "1", required: true },
         { key: "phoneNumberId", ph: "phone number ID", flex: "1", required: true },
-        { key: "verifyTokenEnv", ph: "verify env var, e.g. WA_VERIFY", flex: "1" }
+        { key: "verifyTokenEnv", secret: "WA_VERIFY", ph: "verify word (invent one)", flex: "1" }
       ]
     },
     github: {
-      note: "Restart the node after saving. The webhook needs a public HTTPS address — a small reverse proxy or tunnel in front of the node works.",
+      note: "Starts when you save. GitHub calls the webhook address above — it must be public HTTPS.",
       fields: [
-        { key: "tokenEnv", ph: "token env var, e.g. GH_BOT_TOKEN", def: "GH_BOT_TOKEN", flex: "1", required: true },
-        { key: "webhookSecretEnv", ph: "secret env var (optional)", flex: "1" }
+        { key: "tokenEnv", secret: "GH_BOT_TOKEN", ph: "fine-grained token (github_pat_…)", flex: "1", required: true },
+        { key: "webhookSecretEnv", secret: "GH_HOOK_SECRET", ph: "webhook secret (optional)", flex: "1" }
+      ]
+    },
+    discord: {
+      note: "Starts when you save — the node dials out to Discord, no public address needed (Node 22+).",
+      fields: [
+        { key: "tokenEnv", secret: "DISCORD_BOT_TOKEN", ph: "bot token", flex: "1", required: true }
+      ]
+    },
+    slack: {
+      note: "Save first, then give Slack the events address above — it checks it immediately.",
+      fields: [
+        { key: "tokenEnv", secret: "SLACK_BOT_TOKEN", ph: "bot token (xoxb-…)", flex: "1", required: true },
+        { key: "signingSecretEnv", secret: "SLACK_SIGNING_SECRET", ph: "signing secret", flex: "1" }
       ]
     }
   };
   function channelForm(chn, form) {
     var box = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px", marginTop: "20px" });
-    box.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "12px" }));
+    box.appendChild(css(E("div", null, "Turn it on"), { fontSize: "16px", fontWeight: "700", marginBottom: "10px" }));
+
+    // Who answers this connection? A bound agent makes the channel that
+    // agent's own face — no @mention needed. "Everyone" = shared bot.
+    var agents = myAgents();
+    if (agents.length) {
+      box.appendChild(css(E("div", null, "Who answers here?"), { fontSize: "13px", fontWeight: "700", color: "#9aa0a6", marginBottom: "8px" }));
+      var whoRow = css(E("div", "chips"), { marginBottom: "14px" });
+      var mkWho = function (label, agentId) {
+        var sel = (S.chAgent || null) === (agentId || null);
+        whoRow.appendChild(B("chip-sm" + (sel ? " sel" : ""), esc(label), function () {
+          S.chAgent = agentId;
+          render();
+        }));
+      };
+      mkWho("All agents — @mention picks", null);
+      agents.forEach(function (a) { mkWho(a.id, a.id); });
+      box.appendChild(whoRow);
+      var whoHint = S.chAgent
+        ? "This connection speaks for " + S.chAgent + " — every message goes straight to it, like texting a person. @mentions of other agents still work."
+        : "A shared connection — @mention the agent you want; plain messages go to your first agent.";
+      box.appendChild(css(E("div", null, esc(whoHint)), { fontSize: "13px", color: "#5f6368", lineHeight: "1.5", marginBottom: "14px" }));
+    }
+
+    var agentId = S.chAgent || null;
+    var binding = bindingFor(chn.id, agentId);
     var row = css(E("div"), { display: "flex", gap: "10px", flexWrap: "wrap" });
-    var saved = ((S.status && S.status.channelsConfig) || {})[chn.id] || {};
     var inputs = {};
     form.fields.forEach(function (f) {
-      var formKey = chn.id + "." + f.key;
+      var formKey = chn.id + "." + (agentId || "shared") + "." + f.key;
       var inp = E("input", "input");
+      if (f.secret) inp.type = "password";
       css(inp, { flex: f.flex, height: "50px", borderRadius: "14px", fontSize: "14.5px", minWidth: "140px" });
-      inp.placeholder = f.ph;
-      inp.value = S.form[formKey] != null ? S.form[formKey] : (saved[f.key] || f.def || "");
+      inp.placeholder = f.secret && binding ? "saved — paste to replace" : f.ph;
+      inp.value = S.form[formKey] != null ? S.form[formKey] : (f.secret ? "" : ((binding && binding[f.key]) || ""));
       inp.oninput = function () { S.form[formKey] = inp.value; };
-      inputs[f.key] = inp;
+      inputs[f.key] = { el: inp, f: f, formKey: formKey };
       row.appendChild(inp);
     });
-    var save = B("", "Save", function () {
+    var save = B("", binding ? "Update" : "Save", function () {
       var body = { kind: chn.id };
+      if (binding) body.id = binding.id;
+      if (agentId) body.agentId = agentId;
+      var secretPosts = [];
       for (var i = 0; i < form.fields.length; i++) {
         var f = form.fields[i];
-        var v = inputs[f.key].value.trim();
-        if (f.required && !v) { toast(chn.name + " needs " + f.ph); return; }
-        if (v) body[f.key] = v;
+        var v = inputs[f.key].el.value.trim();
+        if (f.secret) {
+          var envName = secretName(f.secret, agentId);
+          if (v) secretPosts.push({ name: envName, value: v });
+          else if (f.required && !binding) { toast("Paste the " + f.ph + " first"); return; }
+          if (v || (binding && binding[f.key]) || f.required) body[f.key] = envName;
+        } else {
+          if (f.required && !v && !(binding && binding[f.key])) { toast(chn.name + " needs the " + f.ph.replace("https://", "") + " field"); return; }
+          if (v) body[f.key] = v;
+        }
       }
-      api("POST", "/channels", body).then(function () {
-        toast("Saved — restart the node to start " + chn.name);
+      save.disabled = true;
+      var storeAll = secretPosts.reduce(function (p, s) {
+        return p.then(function () { return api("POST", "/secrets", s); });
+      }, Promise.resolve());
+      storeAll.then(function () {
+        return api("POST", "/channels", body);
+      }).then(function (r) {
+        save.disabled = false;
+        form.fields.forEach(function (f) { delete S.form[inputs[f.key].formKey]; });
+        var note = String(r.note || "Saved");
+        toast(note.charAt(0).toUpperCase() + note.slice(1));
         refresh();
-      })["catch"](function (e) { toast(e.message); });
+      })["catch"](function (e) { save.disabled = false; toast(e.message); });
     });
     css(save, { width: "92px", height: "50px", border: "none", borderRadius: "14px", background: BLUE, color: "#ffffff", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
     row.appendChild(save);
     box.appendChild(row);
-    box.appendChild(css(E("div", "hint", form.note), { marginTop: "10px" }));
+    box.appendChild(css(E("div", "hint", form.note + " What you paste stays on this machine, in an owner-only file — it never leaves."), { marginTop: "10px" }));
     return box;
+  }
+  // Every existing connection of this kind — who answers, is it up,
+  // its own webhook address, and one tap to disconnect.
+  function connectionList(chn) {
+    var mine = bindings().filter(function (b) { return b.kind === chn.id; });
+    if (!mine.length) return null;
+    var wrap = css(E("div"), { marginTop: "20px" });
+    wrap.appendChild(css(E("div", null, "Your " + chn.name + " connections"), { fontSize: "16px", fontWeight: "700", marginBottom: "10px" }));
+    var list = E("div", "stack-sm");
+    mine.forEach(function (b) {
+      var row = E("div", "rowcard");
+      var mid = css(E("div"), { flex: "1", minWidth: "0" });
+      mid.appendChild(css(E("div", null,
+        (b.agentId ? "Answers as <b>" + esc(b.agentId) + "</b>" : "Shared — @mentions decide")
+      ), { fontSize: "15px", fontWeight: "600" }));
+      if (chn.hook) {
+        var full = webhookBase() + "/channels/" + b.id + "/webhook";
+        mid.appendChild(css(E("div", "mono", esc(full)), { fontSize: "11.5px", color: "#9aa0a6", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: "2px" }));
+      }
+      row.appendChild(mid);
+      var pill = E("div", "pill", b.running ? "On" : "Not running");
+      css(pill, { color: b.running ? GREEN_D : AMBER, background: b.running ? GREEN_BG : AMBER_BG });
+      row.appendChild(pill);
+      if (chn.hook) row.appendChild(copyBtn(webhookBase() + "/channels/" + b.id + "/webhook", "This connection's address copied"));
+      var rm = B("", "Disconnect", function () {
+        api("POST", "/channels/remove", { id: b.id }).then(function () {
+          toast("Disconnected — it stops answering immediately");
+          refresh();
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(rm, { border: "2px solid #F9C1C1", borderRadius: "12px", background: "#ffffff", color: RED, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 12px", flex: "none" });
+      row.appendChild(rm);
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+    return wrap;
   }
 
   function channelPill(chn) {
     if (!chn.ready) return { text: "Soon", fg: AMBER, bg: AMBER_BG };
     if (channelRunning(chn.id)) return { text: "On", fg: GREEN_D, bg: GREEN_BG };
-    if (channelConfigured(chn.id)) return { text: "Restart to start", fg: AMBER, bg: AMBER_BG };
+    if (channelConfigured(chn.id)) return { text: "Not running", fg: AMBER, bg: AMBER_BG };
     return { text: "Set up", fg: BLUE, bg: BLUE_BG };
+  }
+  // The address an outside service must call. publicUrl (the HTTPS
+  // front) wins; the node's own address is the fallback.
+  function webhookBase() {
+    var s = S.status || {};
+    return String(s.publicUrl || s.url || "").replace(/[/]+$/, "");
+  }
+  function copyBtn(text, msg) {
+    var b = B("", "Copy", function () { copyText(text, msg || "Copied"); });
+    css(b, { border: "2px solid #dadce0", borderRadius: "12px", background: "#ffffff", color: BLUE, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 14px", flex: "none" });
+    return b;
+  }
+  function webhookBox(chn) {
+    var base = webhookBase();
+    // The selected connection's own address when it exists; the fresh
+    // one gets its address the moment the form below is saved.
+    var binding = bindingFor(chn.id, S.chAgent || null);
+    var full = base + (binding ? "/channels/" + binding.id + "/webhook" : chn.hook);
+    var isPublicHttps = base.indexOf("https://") === 0;
+    var box = css(E("div"), { background: "#ffffff", border: "2px solid " + (isPublicHttps ? "#A9CBFF" : "#FFE08A"), borderRadius: "20px", padding: "20px", marginTop: "20px" });
+    box.appendChild(css(E("div", null, "Your webhook address"), { fontSize: "16px", fontWeight: "700", marginBottom: "10px" }));
+    var row = css(E("div"), { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" });
+    var code = E("code", "code", esc(full));
+    css(code, { flex: "1", minWidth: "200px" });
+    row.appendChild(code);
+    row.appendChild(copyBtn(full, "Copied — paste it in " + chn.name + "'s settings"));
+    box.appendChild(row);
+    if (!isPublicHttps) {
+      box.appendChild(css(E("div", null,
+        chn.name + " can only call an address that starts with https:// and is reachable from the internet. If you have one (a domain, a tunnel, or a reverse proxy in front of this machine), enter it here — the address above updates instantly:"
+      ), { fontSize: "13.5px", color: AMBER, fontWeight: "600", lineHeight: "1.5", margin: "12px 0 8px" }));
+      var setRow = css(E("div"), { display: "flex", gap: "8px" });
+      var inp = E("input", "input mono");
+      css(inp, { flex: "1", height: "46px", borderRadius: "12px", fontSize: "13px", minWidth: "0" });
+      inp.placeholder = "https://agentina.example.com";
+      inp.value = S.form.publicUrl || "";
+      inp.oninput = function () { S.form.publicUrl = inp.value; };
+      var saveB = B("", "Set", function () {
+        var v = inp.value.trim();
+        if (v.indexOf("https://") !== 0) { toast("The public address must start with https://"); return; }
+        api("POST", "/account", { publicUrl: v }).then(function () {
+          delete S.form.publicUrl;
+          toast("Saved — your webhook address is ready to copy");
+          refresh();
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(saveB, { width: "72px", height: "46px", border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+      setRow.appendChild(inp); setRow.appendChild(saveB);
+      box.appendChild(setRow);
+      box.appendChild(css(E("div", "hint", "You can also serve HTTPS from the node itself with your own certificate — see Advanced → “Reachability”."), { marginTop: "8px" }));
+    }
+    return box;
   }
   SCREENS.advanced = function () {
     var d = screenRoot("advanced");
@@ -1621,11 +1821,72 @@ export const CONSOLE_HTML = `<!doctype html>
     var s = S.status || {};
     var me = s.party || {};
     var node = E("div", "mono",
-      esc((s.url || "") + " · " + (s.protocol || "")) + "<br>" +
+      esc((s.url || "") + " · " + (s.protocol || "") + (s.tls ? " · https" : "")) + "<br>" +
       "party " + esc(me.id || "") + " · " + esc(me.name || "") + "<br>" +
       "agents: " + esc(myAgents().map(function (a) { return a.id; }).join(", ") || "none"));
     css(node, { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "16px", padding: "16px 20px", fontSize: "13px", color: "#5f6368", lineHeight: "1.8", wordBreak: "break-all" });
     d.appendChild(node);
+
+    // Everything you might need to paste somewhere else — one tap each.
+    var copies = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px" });
+    var copyChip = function (label, value) {
+      if (!value) return;
+      var b = B("sug", esc(label), function () { copyText(value, label + " copied"); });
+      copies.appendChild(b);
+    };
+    copyChip("Copy node address", s.url);
+    copyChip("Copy public address", s.publicUrl);
+    copyChip("Copy party id", me.id);
+    copyChip("Copy invite page", s.url ? s.url + "/" : null);
+    d.appendChild(copies);
+
+    var ebR = E("div", "eyebrow", "Reachability — for webhook channels");
+    css(ebR, { margin: "28px 0 12px" });
+    d.appendChild(ebR);
+    var reach = css(E("div"), { background: "#ffffff", border: "2px solid #e8eaed", borderRadius: "20px", padding: "20px" });
+    reach.appendChild(css(E("div", null, "WhatsApp, GitHub, Slack, and GitLab call your node over public HTTPS. Give agentina that address (a domain, a tunnel, or a reverse proxy pointing at this machine) — every channel screen then shows the exact URL to copy."), { fontSize: "14px", color: "#5f6368", lineHeight: "1.55", marginBottom: "12px" }));
+    var pubRow = css(E("div"), { display: "flex", gap: "8px" });
+    var pubInp = E("input", "input mono");
+    css(pubInp, { flex: "1", height: "48px", borderRadius: "12px", fontSize: "13px", minWidth: "0" });
+    pubInp.placeholder = "https://agentina.example.com";
+    pubInp.value = S.form.advPublicUrl != null ? S.form.advPublicUrl : (s.publicUrl || "");
+    pubInp.oninput = function () { S.form.advPublicUrl = pubInp.value; };
+    var pubSave = B("", "Save", function () {
+      var v = pubInp.value.trim();
+      if (v && v.indexOf("https://") !== 0) { toast("The public address must start with https://"); return; }
+      api("POST", "/account", { publicUrl: v }).then(function () {
+        delete S.form.advPublicUrl;
+        toast(v ? "Saved — channel screens show the new address" : "Cleared");
+        refresh();
+      })["catch"](function (e) { toast(e.message); });
+    });
+    css(pubSave, { width: "72px", height: "48px", border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+    pubRow.appendChild(pubInp); pubRow.appendChild(pubSave);
+    reach.appendChild(pubRow);
+
+    reach.appendChild(css(E("div", null, "Have your own certificate? The node can serve HTTPS directly — it switches over the moment you save."), { fontSize: "14px", color: "#5f6368", lineHeight: "1.55", margin: "16px 0 8px" }));
+    var tlsRow = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap" });
+    var certInp = E("input", "input mono");
+    css(certInp, { flex: "1", height: "48px", borderRadius: "12px", fontSize: "13px", minWidth: "140px" });
+    certInp.placeholder = "/path/to/fullchain.pem";
+    certInp.value = S.form.tlsCert || "";
+    certInp.oninput = function () { S.form.tlsCert = certInp.value; };
+    var keyInp = E("input", "input mono");
+    css(keyInp, { flex: "1", height: "48px", borderRadius: "12px", fontSize: "13px", minWidth: "140px" });
+    keyInp.placeholder = "/path/to/privkey.pem";
+    keyInp.value = S.form.tlsKey || "";
+    keyInp.oninput = function () { S.form.tlsKey = keyInp.value; };
+    var tlsSave = B("", s.tls ? "Update" : "Save", function () {
+      api("POST", "/account", { tlsCertPath: certInp.value.trim(), tlsKeyPath: keyInp.value.trim() }).then(function (r) {
+        toast(r.tls ? "Saved — the node is switching to HTTPS now" : "Certificates cleared — back to plain HTTP");
+        setTimeout(refresh, 1500);
+      })["catch"](function (e) { toast(e.message); });
+    });
+    css(tlsSave, { width: "80px", height: "48px", border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", boxShadow: "0 3px 0 " + BLUE_D, flex: "none" });
+    tlsRow.appendChild(certInp); tlsRow.appendChild(keyInp); tlsRow.appendChild(tlsSave);
+    reach.appendChild(tlsRow);
+    if (s.tls) reach.appendChild(css(E("div", "hint", "HTTPS is on — the node serves your certificate."), { marginTop: "8px" }));
+    d.appendChild(reach);
 
     var eb2 = E("div", "eyebrow", "Channels — talk to agents from chat");
     css(eb2, { margin: "28px 0 12px" });
@@ -1633,13 +1894,19 @@ export const CONSOLE_HTML = `<!doctype html>
     var rail = E("div", "rail");
     CHANNELS.forEach(function (chn) {
       var pill = channelPill(chn);
-      var card = B("card", "", function () { S.channelId = chn.id; go("channel"); });
+      var card = B("card", "", function () { S.channelId = chn.id; S.chAgent = null; go("channel"); });
       css(card, { flexDirection: "column", gap: "12px", width: "158px", flex: "none", padding: "18px", alignItems: "stretch", scrollSnapAlign: "start" });
+      var mine = bindings().filter(function (b) { return b.kind === chn.id; });
+      var who = mine.length
+        ? "<div style='font-size:12px;font-weight:700;color:" + GREEN_D + "'>" +
+          esc(mine.map(function (b) { return b.agentId || "shared"; }).join(" · ")) + "</div>"
+        : "";
       card.innerHTML =
         "<div style='display:flex;align-items:center;justify-content:space-between'>" +
         "<div class='glyph' style='width:44px;height:44px;background:" + chn.bg + ";color:" + chn.fg + ";font-size:14px'>" + chn.glyph + "</div>" +
         "<div class='pill' style='font-size:11.5px;color:" + pill.fg + ";background:" + pill.bg + "'>" + pill.text + "</div></div>" +
         "<div style='font-size:16.5px;font-weight:700'>" + chn.name + "</div>" +
+        who +
         "<div style='font-size:13px;color:#5f6368;line-height:1.4'>" + chn.tagline + "</div>";
       rail.appendChild(card);
     });
@@ -1657,7 +1924,7 @@ export const CONSOLE_HTML = `<!doctype html>
       "<div class='chev' style='font-size:20px'>›</div>";
     d.appendChild(rt);
 
-    d.appendChild(css(E("div", "hint", "Secrets are read from environment variables, never stored in files."), { marginTop: "20px" }));
+    d.appendChild(css(E("div", "hint", "Tokens you paste stay on this machine, in an owner-only file next to agentina's own credentials. Environment variables with the same names always win — pros can keep using them."), { marginTop: "20px" }));
     return d;
   };
 
@@ -1695,8 +1962,11 @@ export const CONSOLE_HTML = `<!doctype html>
     });
     d.appendChild(steps);
 
+    if (chn.hook) d.appendChild(webhookBox(chn));
     var form = CHANNEL_FORMS[chn.id];
     if (form) d.appendChild(channelForm(chn, form));
+    var existing = connectionList(chn);
+    if (existing) d.appendChild(existing);
 
     if (!chn.ready) {
       var soon = E("div", null, "This channel ships soon — every adapter shares the same 4-method contract, so setup will look exactly like the steps above.");
@@ -1780,7 +2050,7 @@ export const CONSOLE_HTML = `<!doctype html>
     bind.oninput = function () { S.form.acctBind = bind.value; };
     d.appendChild(bind);
     d.appendChild(css(E("div", "hint",
-      "The address others reach you on — your Tailscale / WireGuard IP, or a WAN address. New invites embed it; restart the node (with <span class='mono' style='font-size:12.5px'>--bind</span> this address) so it also listens there. Party id <span class='mono' style='font-size:12.5px'>" + esc(me.id || "") + "</span> stays fixed."
+      "The address others reach you on — your Tailscale / WireGuard IP, or a WAN address. It applies the moment you save: agentina starts answering on it and new invites carry it. Party id <span class='mono' style='font-size:12.5px'>" + esc(me.id || "") + "</span> stays fixed."
     ), { margin: "8px 0 20px" }));
 
     var help = B("", "", function () { go("networkHelp"); });
@@ -1832,7 +2102,15 @@ export const CONSOLE_HTML = `<!doctype html>
         { title: "Everything is on the record", body: "Every use and every denial lands in Activity — on both sides. No silent access, ever." }
       ],
       links: [{ label: "Invite someone →", action: "invite" }, { label: "See your activity →", action: "activity" }] },
-    { id: "connect", glyph: "2", bg: GREEN_BG, fg: GREEN_D, title: "Connect with someone", tagline: "One invite link, one paste",
+    { id: "solo", glyph: "2", bg: GREEN_BG, fg: GREEN_D, title: "Use it just for yourself", tagline: "Your own agents in your own chat apps — no second person needed",
+      steps: [
+        { title: "Create an agent", body: "My agents → New agent: give it a folder and a purpose. That's a private AI worker on your own machine — nothing is shared with anyone." },
+        { title: "Give it its own line", body: "In the agent's edit screen, tap + Telegram (or WhatsApp, Discord…), paste a bot token, Save. That bot now IS your agent — its own face on the channel." },
+        { title: "Message it like a person", body: "Text it from your phone. It answers from its folder, using its skills — no @mention needed, it's a private line straight to that agent." },
+        { title: "One line per agent, per channel", body: "Your bookkeeper can have its own Telegram bot while your project assistant has its own WhatsApp number — and a shared bot with @mentions can exist alongside them." }
+      ],
+      links: [{ label: "Open My agents →", action: "agents" }] },
+    { id: "connect", glyph: "3", bg: GREEN_BG, fg: GREEN_D, title: "Connect with someone", tagline: "One invite link, one paste",
       steps: [
         { title: "One of you invites", body: "Tap “Invite someone”. You get a link that works once and expires in 15 minutes — safe to send over any chat." },
         { title: "The other one joins", body: "They open agentina on their machine, tap “I have an invite link”, and paste it. That's the whole pairing." },
@@ -1840,7 +2118,7 @@ export const CONSOLE_HTML = `<!doctype html>
         { title: "Test it", body: "Open the contact and tap “test connection” — you should see an answer in milliseconds." }
       ],
       links: [{ label: "Invite someone →", action: "invite" }, { label: "I have an invite link →", action: "join" }, { label: "Get reachable — the network guide →", action: "networkHelp" }] },
-    { id: "share", glyph: "3", bg: AMBER_BG, fg: AMBER, title: "Share something safely", tagline: "Exactly this, nothing else, stop anytime",
+    { id: "share", glyph: "4", bg: AMBER_BG, fg: AMBER, title: "Share something safely", tagline: "Exactly this, nothing else, stop anytime",
       steps: [
         { title: "Open the contact, tap “Share something”", body: "Pick what to share: a folder, one of your agents, a server, or a repository." },
         { title: "Pick how much they can do", body: "“Look only” means look only — your machine refuses writes, not their good manners." },
@@ -1848,14 +2126,14 @@ export const CONSOLE_HTML = `<!doctype html>
         { title: "Stop it in one tap", body: "On the contact screen, every share has a Stop button. Their very next use is denied." }
       ],
       links: [{ label: "Go to your people →", action: "home" }] },
-    { id: "ask", glyph: "4", bg: BLUE_BG, fg: BLUE, title: "Ask their agents", tagline: "Only what they shared — and they see every ask",
+    { id: "ask", glyph: "5", bg: BLUE_BG, fg: BLUE, title: "Ask their agents", tagline: "Only what they shared — and they see every ask",
       steps: [
         { title: "The chips are what they shared", body: "On the Ask screen, each chip is one thing they shared with you. Pick one, then write your message." },
         { title: "Plain language works", body: "Try “read brief.txt”, “list”, or just describe what you need — their AI agent answers from inside its folder." },
         { title: "Denials are normal, not errors", body: "Ask for something outside the share and the reply is an honest “denied”. It's logged on both sides — that's the system working." }
       ],
       links: [{ label: "Go to your people →", action: "home" }] },
-    { id: "agents", glyph: "5", bg: GREEN_BG, fg: GREEN_D, title: "Your agents & skills", tagline: "AI workers, jailed to one folder each",
+    { id: "agents", glyph: "6", bg: GREEN_BG, fg: GREEN_D, title: "Your agents & skills", tagline: "AI workers, jailed to one folder each",
       steps: [
         { title: "Create one in “My agents”", body: "Give it a name, a folder, and a purpose in plain language. The folder is its whole world — it cannot see outside." },
         { title: "Skills are markdown files", body: "Drop .md files into workspace/skills/ — the agent reads them on its next answer. No restart, no config." },
@@ -1863,14 +2141,15 @@ export const CONSOLE_HTML = `<!doctype html>
         { title: "Share it like anything else", body: "An agent only answers a contact after you share it with them — with the same look-only/time-box controls." }
       ],
       links: [{ label: "Open My agents →", action: "agents" }, { label: "AI runtimes — install guides →", action: "runtimes" }] },
-    { id: "channels", glyph: "6", bg: AMBER_BG, fg: AMBER, title: "Talk from your chat apps", tagline: "WhatsApp, Telegram, GitHub, GitLab",
+    { id: "channels", glyph: "7", bg: AMBER_BG, fg: AMBER, title: "Talk from your chat apps", tagline: "WhatsApp, Telegram, Discord, Slack, GitHub, GitLab",
       steps: [
-        { title: "Connect a channel once", body: "In Advanced → Channels, each card has numbered setup steps and a “Turn it on” form. Tokens live in environment variables, never in files." },
+        { title: "Connect a channel once", body: "In Advanced → Channels, each card walks you through it: copy the token from the service, paste it in the form, Save — the channel starts right away. What you paste stays on this machine." },
+        { title: "Pick who answers", body: "A connection can speak for one agent (its own bot — no mention needed) or for all of them (@mention picks). Set it right in the form." },
         { title: "Mention an agent anywhere", body: "Write @assistant summarize this in a chat, an issue, or a PR comment — the reply comes back in the same thread." },
         { title: "The rules follow the mention", body: "A mention can reach an agent on the other side of the trust boundary. Their shares still decide — a denial comes back as the reply, and both activity logs record it." }
       ],
       links: [{ label: "Open Channels →", action: "advanced" }] },
-    { id: "safety", glyph: "7", bg: RED_BG, fg: RED, title: "How you're protected", tagline: "The whole security model on one page",
+    { id: "safety", glyph: "8", bg: RED_BG, fg: RED, title: "How you're protected", tagline: "The whole security model on one page",
       steps: [
         { title: "No accounts, no cloud", body: "Your machine talks to theirs directly. Nothing you share passes through anyone else's servers." },
         { title: "Every request is attributed", body: "Pairing mints two separate credentials — one per direction. A request without a valid one is rejected and logged." },
@@ -1984,17 +2263,14 @@ export const CONSOLE_HTML = `<!doctype html>
     var conn = connectivity();
     var last = css(E("div"), { background: BLUE_BG, border: "2px solid #A9CBFF", borderRadius: "20px", padding: "20px", marginTop: "24px" });
     last.appendChild(css(E("div", null, "Last step — tell agentina your address"), { fontSize: "17px", fontWeight: "800", marginBottom: "8px" }));
-    last.appendChild(css(E("div", null, "Once you have an address, restart agentina with it. New invite links then carry it automatically."), { fontSize: "14.5px", color: "#3c4a5f", lineHeight: "1.55", marginBottom: "10px" }));
-    var row = css(E("div"), { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" });
-    var code = E("code", "mono", esc(conn.cmd));
-    css(code, { fontSize: "12.5px", background: "#ffffff", border: "1px solid #A9CBFF", borderRadius: "8px", padding: "6px 10px" });
-    row.appendChild(code);
-    var cp = B("", "Copy", function () { copyText(conn.cmd, "Copied — run it where agentina lives"); });
-    css(cp, { border: "none", background: "none", color: BLUE_D, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px" });
-    row.appendChild(cp);
-    last.appendChild(row);
-    var acct = B("", "Or edit the address in your account settings →", openAccount);
-    css(acct, { border: "none", background: "none", color: BLUE_D, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px 6px 0 0", marginTop: "4px" });
+    last.appendChild(css(E("div", null, "Type it into your account settings — agentina applies it right away, no restart. New invite links carry it automatically."), { fontSize: "14.5px", color: "#3c4a5f", lineHeight: "1.55", marginBottom: "10px" }));
+    if (conn.ip && !conn.reachable) {
+      var useIp2 = B("", "Use my Tailscale address — " + esc(conn.ip), function () { applyAddress(conn.ip); });
+      css(useIp2, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14.5px", fontWeight: "700", cursor: "pointer", padding: "10px 16px", boxShadow: "0 3px 0 " + BLUE_D, marginBottom: "6px" });
+      last.appendChild(useIp2);
+    }
+    var acct = B("", "Open your account settings →", openAccount);
+    css(acct, { display: "block", border: "none", background: "none", color: BLUE_D, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "6px 6px 0 0", marginTop: "4px" });
     last.appendChild(acct);
     d.appendChild(last);
 

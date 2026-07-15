@@ -35,8 +35,12 @@ describe("console page integrity", () => {
       "SCREENS.activity", "SCREENS.advanced", "SCREENS.channel",
       "SCREENS.account", "SCREENS.networkHelp",
       "SCREENS.help", "SCREENS.guide",
-      // all four configurable channels have turn-it-on forms
-      "whatsapp:", "github:", "telegram:", "gitlab:",
+      // all six configurable channels have turn-it-on forms
+      "whatsapp:", "github:", "telegram:", "gitlab:", "discord:", "slack:",
+      // paste-a-token secrets, resolved webhook addresses, self-applying address
+      "/secrets", "webhookBase", "applyAddress",
+      // per-agent channel bindings + solo-use guide
+      "channelBindings", "Who answers here?", "/channels/remove", "Use it just for yourself",
       // key copy and wiring
       "Ask their agents", "Share something", "agentina://join/",
       "/environment/refresh", "/agentina/v1",
