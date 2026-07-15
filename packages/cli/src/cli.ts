@@ -101,6 +101,8 @@ Usage:
   agentina offer --id <id> [--name <n>] [--adapter echo|scoped-fs|claude-code] [--root <dir>]
   agentina channel telegram --token-env <VAR> [--chats <id,id…>]
   agentina channel gitlab --host <url> --token-env <VAR> [--secret-env <VAR>]
+  agentina channel whatsapp --token-env <VAR> --phone-id <id> [--verify-env <VAR>] [--numbers <wa_id,…>]
+  agentina channel github --token-env <VAR> [--secret-env <VAR>]
   agentina grant --to <peer> --agent <id[,id…]> [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--skill <id>] [--expires 2h|7d|<ISO>]
   agentina session --to <peer> --ttl <45m|2h> --adapter scoped-fs|ssh-exec|scoped-git|claude-code
                    [--root <dir>] [--fs <dir> --mode ro|rw] [--ssh <user@host>] [--repo <url>] [--agent-id <id>]
@@ -207,8 +209,8 @@ async function main(): Promise<void> {
 
     case "channel": {
       const kind = positional[0]
-      if (kind !== "telegram" && kind !== "gitlab") {
-        throw new Error("Usage: agentina channel telegram|gitlab …")
+      if (kind !== "telegram" && kind !== "gitlab" && kind !== "whatsapp" && kind !== "github") {
+        throw new Error("Usage: agentina channel telegram|gitlab|whatsapp|github …")
       }
       const body: Record<string, unknown> = { kind, tokenEnv: flags["token-env"] }
       if (kind === "telegram" && typeof flags.chats === "string") body.allowedChats = flags.chats.split(",")
@@ -216,9 +218,19 @@ async function main(): Promise<void> {
         body.host = flags.host
         if (typeof flags["secret-env"] === "string") body.webhookSecretEnv = flags["secret-env"]
       }
+      if (kind === "whatsapp") {
+        body.phoneNumberId = flags["phone-id"]
+        if (typeof flags["verify-env"] === "string") body.verifyTokenEnv = flags["verify-env"]
+        if (typeof flags.numbers === "string") body.allowedNumbers = flags.numbers.split(",")
+      }
+      if (kind === "github") {
+        if (typeof flags["secret-env"] === "string") body.webhookSecretEnv = flags["secret-env"]
+      }
       const r = await control(port, "POST", "/agentina/v1/channels", body)
       console.log(`Configured ${r.configured} — ${r.note}`)
       if (kind === "gitlab") console.log(`Point the project webhook at: <node-url>/channels/gitlab/webhook (note events)`)
+      if (kind === "github") console.log(`Point the repo webhook at: <node-url>/channels/github/webhook (issue comments event)`)
+      if (kind === "whatsapp") console.log(`Point the Meta app webhook at: <node-url>/channels/whatsapp/webhook (messages field)`)
       return
     }
 

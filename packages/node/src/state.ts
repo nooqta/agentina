@@ -23,6 +23,8 @@ export interface PendingInvite {
 export interface ChannelsConfig {
   telegram?: { tokenEnv: string; allowedChats?: string[] }
   gitlab?: { host: string; tokenEnv: string; webhookSecretEnv?: string }
+  whatsapp?: { tokenEnv: string; phoneNumberId: string; verifyTokenEnv?: string; allowedNumbers?: string[] }
+  github?: { tokenEnv: string; webhookSecretEnv?: string }
 }
 
 export interface NodeStateShape {

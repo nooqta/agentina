@@ -7,7 +7,7 @@ import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
 import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant } from "@agentina-mesh/grants"
 import { CONSOLE_HTML } from "@agentina-mesh/console"
-import { ChannelRouter, TelegramAdapter, GitLabAdapter, type ChannelHost } from "@agentina-mesh/channels"
+import { ChannelRouter, TelegramAdapter, GitLabAdapter, WhatsAppAdapter, GitHubAdapter, type ChannelHost } from "@agentina-mesh/channels"
 import { NodeState } from "./state"
 import { EchoAdapter, type AgentAdapter } from "./adapter"
 import { ScopedFsAdapter } from "./adapters/scoped-fs"
@@ -66,6 +66,8 @@ export class AgentinaNode {
   readonly mesh: Mesh
   readonly channels: ChannelRouter
   private gitlabChannel?: GitLabAdapter
+  private whatsappChannel?: WhatsAppAdapter
+  private githubChannel?: GitHubAdapter
   private adapter: AgentAdapter
   private adapters = new Map<string, AgentAdapter>()
   private server?: Server
@@ -166,6 +168,38 @@ export class AgentinaNode {
         this.channels.attach(this.gitlabChannel)
       } else {
         this.log(`[channels] gitlab configured but $${cfg.gitlab.tokenEnv} is unset — skipped`)
+      }
+    }
+    if (cfg.whatsapp) {
+      const token = process.env[cfg.whatsapp.tokenEnv]
+      if (token) {
+        this.whatsappChannel = new WhatsAppAdapter(
+          {
+            token,
+            phoneNumberId: cfg.whatsapp.phoneNumberId,
+            verifyToken: cfg.whatsapp.verifyTokenEnv ? process.env[cfg.whatsapp.verifyTokenEnv] : undefined,
+            allowedNumbers: cfg.whatsapp.allowedNumbers,
+          },
+          this.log,
+        )
+        this.channels.attach(this.whatsappChannel)
+      } else {
+        this.log(`[channels] whatsapp configured but $${cfg.whatsapp.tokenEnv} is unset — skipped`)
+      }
+    }
+    if (cfg.github) {
+      const token = process.env[cfg.github.tokenEnv]
+      if (token) {
+        this.githubChannel = new GitHubAdapter(
+          {
+            token,
+            webhookSecret: cfg.github.webhookSecretEnv ? process.env[cfg.github.webhookSecretEnv] : undefined,
+          },
+          this.log,
+        )
+        this.channels.attach(this.githubChannel)
+      } else {
+        this.log(`[channels] github configured but $${cfg.github.tokenEnv} is unset — skipped`)
       }
     }
   }
@@ -602,6 +636,33 @@ export class AgentinaNode {
       return this.json(res, status, { ok: status < 400 })
     }
 
+    // Public: GitHub webhook — HMAC over the RAW bytes is its auth, so
+    // the adapter gets the unparsed body and verifies before parsing.
+    if (route === "POST /channels/github/webhook") {
+      if (!this.githubChannel) return this.json(res, 404, { error: "github channel not configured" })
+      const raw = await this.readRawBody(req)
+      const status = this.githubChannel.handleWebhook(req.headers, raw)
+      return this.json(res, status, { ok: status < 400 })
+    }
+
+    // Public: WhatsApp webhook — GET is Meta's verification handshake,
+    // POST carries messages (statuses of our own sends are ignored).
+    if (route === "GET /channels/whatsapp/webhook") {
+      if (!this.whatsappChannel) return this.json(res, 404, { error: "whatsapp channel not configured" })
+      const query = new URL(req.url ?? "/", "http://x").searchParams
+      const challenge = this.whatsappChannel.verify(query)
+      if (challenge === undefined) return this.json(res, 403, { error: "verification failed" })
+      res.writeHead(200, { "Content-Type": "text/plain" })
+      res.end(challenge)
+      return
+    }
+    if (route === "POST /channels/whatsapp/webhook") {
+      if (!this.whatsappChannel) return this.json(res, 404, { error: "whatsapp channel not configured" })
+      const body = await this.readBody(req)
+      const status = this.whatsappChannel.handleWebhook(body)
+      return this.json(res, status, { ok: status < 400 })
+    }
+
     // Everything else requires attribution (party token or loopback).
     const decision = decideAuth({
       remoteAddress: req.socket.remoteAddress ?? "",
@@ -801,8 +862,22 @@ export class AgentinaNode {
             tokenEnv: String(body.tokenEnv),
             ...(body.webhookSecretEnv ? { webhookSecretEnv: String(body.webhookSecretEnv) } : {}),
           }
+        } else if (kind === "whatsapp") {
+          if (!body.tokenEnv || !body.phoneNumberId) return this.json(res, 400, { error: "Missing: tokenEnv, phoneNumberId" })
+          channels.whatsapp = {
+            tokenEnv: String(body.tokenEnv),
+            phoneNumberId: String(body.phoneNumberId),
+            ...(body.verifyTokenEnv ? { verifyTokenEnv: String(body.verifyTokenEnv) } : {}),
+            ...(Array.isArray(body.allowedNumbers) ? { allowedNumbers: body.allowedNumbers.map(String) } : {}),
+          }
+        } else if (kind === "github") {
+          if (!body.tokenEnv) return this.json(res, 400, { error: "Missing: tokenEnv" })
+          channels.github = {
+            tokenEnv: String(body.tokenEnv),
+            ...(body.webhookSecretEnv ? { webhookSecretEnv: String(body.webhookSecretEnv) } : {}),
+          }
         } else {
-          return this.json(res, 400, { error: `Unknown channel kind: ${kind} (telegram | gitlab)` })
+          return this.json(res, 400, { error: `Unknown channel kind: ${kind} (telegram | gitlab | whatsapp | github)` })
         }
         this.state.save()
         return this.json(res, 201, { configured: kind, note: "restart the node to start the channel" })
@@ -1079,6 +1154,26 @@ export class AgentinaNode {
       party: this.party,
       protocol: PROTOCOL_VERSION,
     }
+  }
+
+  /** The unparsed request body — webhook signatures (GitHub) are HMACs
+   *  over the exact bytes, so parse-then-restringify would break them. */
+  private readRawBody(req: IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      let size = 0
+      const chunks: Buffer[] = []
+      req.on("data", (c: Buffer) => {
+        size += c.length
+        if (size > MAX_BODY_BYTES) {
+          reject(new Error("body too large"))
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")))
+      req.on("error", reject)
+    })
   }
 
   private readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
