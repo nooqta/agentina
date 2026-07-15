@@ -27,12 +27,17 @@ export class ChannelRouter {
 
   async start(): Promise<void> {
     for (const adapter of this.adapters) {
-      await adapter.start((msg) => {
-        void this.handle(adapter, msg).catch((e) => {
-          this.host.log(`[channels/${adapter.name}] handler error: ${e?.message || e}`)
+      // One bad token must not block the other channels from starting.
+      try {
+        await adapter.start((msg) => {
+          void this.handle(adapter, msg).catch((e) => {
+            this.host.log(`[channels/${adapter.name}] handler error: ${e?.message || e}`)
+          })
         })
-      })
-      this.host.log(`[channels] ${adapter.name} started`)
+        this.host.log(`[channels] ${adapter.name} started`)
+      } catch (e: any) {
+        this.host.log(`[channels] ${adapter.name} failed to start: ${e?.message || e}`)
+      }
     }
   }
 
