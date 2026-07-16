@@ -106,3 +106,22 @@ export function enforceGrant(grants: Grant[], agentId: string): GrantDecision {
   }
   return { allowed: false, reason: "agent-not-granted" }
 }
+
+export type SkillDecision =
+  | { allowed: true; grant: Grant }
+  | { allowed: false; reason: "no-skill-grant" }
+
+/**
+ * May `toParty` read the skill `skillId`? A skill grant carries a
+ * `{ kind: "skill", skillId }` scope and — deliberately — an EMPTY
+ * agentIds, so it can never be mistaken by enforceGrant for permission
+ * to invoke an agent. A shared skill is reference material, not access.
+ */
+export function enforceSkillScope(grants: Grant[], skillId: string): SkillDecision {
+  for (const g of grants) {
+    for (const s of g.scopes) {
+      if (s.kind === "skill" && s.skillId === skillId) return { allowed: true, grant: g }
+    }
+  }
+  return { allowed: false, reason: "no-skill-grant" }
+}

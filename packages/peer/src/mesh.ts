@@ -515,6 +515,29 @@ export class Mesh {
   }
 
   /**
+   * Fetch one shared skill's text from its owner (by party id), under
+   * our skill grant. Fail-closed: any denial, missing peer, or network
+   * error returns undefined, so a revoked or offline skill simply
+   * vanishes from the adopting agent's next turn.
+   */
+  async fetchSkill(ownerPartyId: string, skillId: string): Promise<{ text: string; version: string } | undefined> {
+    let state: PeerState | undefined
+    for (const s of this.peers.values()) if (s.peer.partyId === ownerPartyId) { state = s; break }
+    if (!state) return undefined
+    const url = `${state.peer.url}/skill?skillId=${encodeURIComponent(skillId)}`
+    const headers: Record<string, string> = {}
+    if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
+    try {
+      const res = await fetch(url, { headers })
+      if (!res.ok) return undefined
+      const j = (await res.json()) as { text?: string; version?: string }
+      return typeof j.text === "string" ? { text: j.text, version: String(j.version ?? "") } : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Get the combined agent directory across all peers.
    */
   directory(): Array<{

@@ -81,6 +81,22 @@ export interface AdapterSpec {
   /** Skill files (by name) the owner switched off in the console —
    *  they stay on disk but are not injected into the prompt. */
   disabledSkills?: string[]
+  /** Skills this agent has ADOPTED from other parties, live-referenced:
+   *  fetched from the owner per turn under a skill grant, so revoke and
+   *  TTL apply. Pointers, not copies — the text never lives here. */
+  adoptedSkills?: AdoptedSkillRef[]
+}
+
+/** A live-referenced skill an agent adopted from another party. The
+ *  adopter's node fetches `skillId` from `fromParty` each turn; the
+ *  owner's grant decides whether the text still comes back. */
+export interface AdoptedSkillRef {
+  /** Owner party id — who serves the skill. */
+  fromParty: string
+  /** "<ownerAgentId>:<file>" — the owner's skill identifier. */
+  skillId: string
+  /** Display label, party-prefixed to avoid clashing with local skills. */
+  label: string
 }
 
 /** An agent a party exposes to the mesh. `lifecycle` distinguishes
