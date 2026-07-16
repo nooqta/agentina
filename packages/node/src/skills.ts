@@ -79,6 +79,14 @@ export function removeSkill(workspace: string, file: string): boolean {
   return true
 }
 
+/** Full, uncapped content of one skill file — for editing in the console
+ *  (loadOneSkill truncates, which is right for serving but wrong here). */
+export function readSkill(workspace: string, file: string): string | undefined {
+  const p = skillPath(workspace, file)
+  if (!existsSync(p)) return undefined
+  return readFileSync(p, "utf-8")
+}
+
 /** Read one skill file's text, budget-capped — used to serve a single
  *  shared skill without loading the whole workspace. */
 export function loadOneSkill(workspace: string, file: string): string | undefined {

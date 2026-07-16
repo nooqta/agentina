@@ -18,7 +18,7 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code"
 import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
-import { listSkillNames, listSkills, writeSkill, removeSkill, sanitizeSkillFile } from "./skills"
+import { listSkillNames, listSkills, writeSkill, removeSkill, sanitizeSkillFile, readSkill } from "./skills"
 import { loadSecrets, storeSecret } from "./secrets"
 import { detectEnvironment, type Environment } from "./environment"
 import { suggestDirs } from "./fs-suggest"
@@ -1056,6 +1056,20 @@ export class AgentinaNode {
         if (!ws) return this.json(res, 200, { skills: [] })
         const off = new Set(offer.adapter?.disabledSkills ?? [])
         return this.json(res, 200, { skills: listSkills(ws).map((s) => ({ ...s, on: !off.has(s.file) })) })
+      }
+      case "GET /agentina/v1/skills/content": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const q = new URL(req.url ?? "/", "http://x").searchParams
+        const offer = this.state.data.agents.find((a) => a.id === (q.get("agentId") ?? ""))
+        if (!offer) return this.json(res, 404, { error: `Unknown agent: ${q.get("agentId")}` })
+        const ws = offer.adapter?.baseRoot
+        if (!ws) return this.json(res, 404, { error: "This agent has no workspace" })
+        let file: string
+        try { file = sanitizeSkillFile(q.get("file") ?? "") }
+        catch (e: any) { return this.json(res, 400, { error: e.message }) }
+        const content = readSkill(ws, file)
+        if (content === undefined) return this.json(res, 404, { error: `No such skill: ${file}` })
+        return this.json(res, 200, { file, content })
       }
       case "POST /agentina/v1/skills": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })

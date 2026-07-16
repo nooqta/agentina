@@ -139,7 +139,7 @@ export const CONSOLE_HTML = `<!doctype html>
     contact: null, peerInfo: {}, shares: {}, threads: {},
     chip: {}, conv: {},
     inviteLink: null, inviteBaseline: 0,
-    share: {}, agentNew: {}, edit: null, form: {},
+    share: {}, agentNew: {}, edit: null, skillEdit: {}, form: {},
     channelId: null, hopFlip: false, quickPicks: [],
     toastT: null, sugT: null
   };
@@ -1201,6 +1201,58 @@ export const CONSOLE_HTML = `<!doctype html>
     };
     go("agentEdit");
   }
+  // Pull the just-saved skill list back onto the open editor after an
+  // add/remove, so the agentEdit screen reflects disk without a reopen.
+  function reloadEditSkills() {
+    if (!S.edit) return;
+    var a = ((S.status && S.status.agents) || []).filter(function (x) { return x.id === S.edit.id; })[0];
+    if (a) S.edit.skills = (a.skills || []).map(function (s) { return { file: s.file, desc: s.desc, on: s.on }; });
+    render();
+  }
+  // Open the skill editor — blank for a new skill, or prefilled with the
+  // file's current content for an edit.
+  function openSkillEdit(agentId, file) {
+    if (!file) { S.skillEdit = { agentId: agentId, file: "", content: "", isNew: true }; go("skillEdit"); return; }
+    api("GET", "/skills/content?agentId=" + encodeURIComponent(agentId) + "&file=" + encodeURIComponent(file)).then(function (r) {
+      S.skillEdit = { agentId: agentId, file: r.file, content: r.content || "", isNew: false };
+      go("skillEdit");
+    })["catch"](function (e) { toast(e.message); });
+  }
+  SCREENS.skillEdit = function () {
+    var d = screenRoot("skillEdit");
+    var st = S.skillEdit || { file: "", content: "", isNew: true };
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    d.appendChild(E("div", "title2", st.isNew ? "New skill" : "Edit skill"));
+    d.appendChild(E("div", "sub2", "A markdown file the agent reads on its very next answer — no restart. Lead with a one-line summary."));
+    var name = E("input", "input mono");
+    css(name, { height: "50px", marginBottom: "16px" });
+    name.placeholder = "e.g. status-reports";
+    name.value = st.file;
+    name.disabled = !st.isNew;
+    if (!st.isNew) css(name, { opacity: "0.55", cursor: "not-allowed" });
+    name.oninput = function () { st.file = name.value; };
+    d.appendChild(name);
+    var ta = E("textarea", "input mono");
+    css(ta, { display: "block", width: "100%", minHeight: "320px", padding: "14px 16px", lineHeight: "1.55", resize: "vertical" });
+    ta.placeholder = "# Status reports — lead with what shipped, then blockers. Always cite the source file.";
+    ta.value = st.content;
+    ta.oninput = function () { st.content = ta.value; };
+    d.appendChild(ta);
+    var save = B("btn btn-blue", "Save skill", function () {
+      if (!(st.file || "").trim()) { toast("Give the skill a name first"); return; }
+      save.disabled = true;
+      api("POST", "/skills", { agentId: st.agentId, file: st.file.trim(), content: st.content }).then(function () {
+        toast("Saved — the next answer uses it");
+        return refresh();
+      }).then(function () { reloadEditSkills(); back(); })["catch"](function (e) { save.disabled = false; toast(e.message); });
+    });
+    css(save, { marginTop: "20px" });
+    d.appendChild(save);
+    return d;
+  };
+
   SCREENS.agentEdit = function () {
     var d = screenRoot("agentEdit");
     var ed = S.edit || { id: "?", skills: [] };
@@ -1261,22 +1313,39 @@ export const CONSOLE_HTML = `<!doctype html>
       var list = E("div", "stack-sm");
       ed.skills.forEach(function (sk) {
         var row = E("div", "rowcard");
-        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        var mid = B("", "", function () { openSkillEdit(ed.id, sk.file); });
+        css(mid, { flex: "1", minWidth: "0", background: "none", border: "none", textAlign: "left", cursor: "pointer", padding: "0" });
         mid.appendChild(css(E("div", "mono", esc(sk.file)), { fontSize: "13.5px", fontWeight: "700" }));
         if (sk.desc) mid.appendChild(css(E("div", null, esc(sk.desc)), { fontSize: "13.5px", color: "#5f6368", marginTop: "2px" }));
         row.appendChild(mid);
-        var tg = B("toggle", "<div></div>", function () { sk.on = !sk.on; render(); });
+        var tg = B("toggle", "<div></div>", function () {
+          sk.on = !sk.on;
+          tg.style.background = sk.on ? GREEN : "#dadce0";
+          tg.firstChild.style.left = sk.on ? "25px" : "3px";
+          api("POST", "/skills/toggle", { agentId: ed.id, file: sk.file, on: sk.on })["catch"](function (e) { toast(e.message); });
+        });
         tg.style.background = sk.on ? GREEN : "#dadce0";
         tg.firstChild.style.left = sk.on ? "25px" : "3px";
         row.appendChild(tg);
+        var rm = B("", "×", function () {
+          api("POST", "/skills/remove", { agentId: ed.id, file: sk.file }).then(function () {
+            toast("Removed " + sk.file);
+            refresh().then(reloadEditSkills);
+          })["catch"](function (e) { toast(e.message); });
+        });
+        css(rm, { border: "2px solid #F9C1C1", borderRadius: "10px", background: "#ffffff", color: RED, fontSize: "20px", fontWeight: "700", cursor: "pointer", width: "38px", height: "38px", flex: "none", lineHeight: "1", padding: "0" });
+        row.appendChild(rm);
         list.appendChild(row);
       });
       d.appendChild(list);
     } else {
-      var blank = E("div", null, "No skills yet — drop a .md file in <span class='mono' style='font-size:12.5px'>workspace/skills/</span> and it appears here.");
+      var blank = E("div", null, "No skills yet — add one below, or drop a .md file in <span class='mono' style='font-size:12.5px'>workspace/skills/</span>.");
       css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center" });
       d.appendChild(blank);
     }
+    var addSkill = B("linkbtn", "+ New skill", function () { openSkillEdit(ed.id, null); });
+    css(addSkill, { alignSelf: "flex-start", padding: "0", marginTop: "12px" });
+    d.appendChild(addSkill);
 
     // Channels — this agent's own faces on the outside world. Bind a
     // bot/number to it and talking to that bot IS talking to this agent.
