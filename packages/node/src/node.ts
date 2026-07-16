@@ -18,7 +18,7 @@ import { ClaudeCodeAdapter } from "./adapters/claude-code"
 import { SshExecAdapter } from "./adapters/ssh-exec"
 import { ScopedGitAdapter } from "./adapters/scoped-git"
 import { newId } from "./state"
-import { listSkillNames, listSkills } from "./skills"
+import { listSkillNames, listSkills, writeSkill, removeSkill, sanitizeSkillFile } from "./skills"
 import { loadSecrets, storeSecret } from "./secrets"
 import { detectEnvironment, type Environment } from "./environment"
 import { suggestDirs } from "./fs-suggest"
@@ -1042,6 +1042,68 @@ export class AgentinaNode {
         }
         this.addAgent(offer)
         return this.json(res, 201, offer)
+      }
+
+      // ----- Skill management: add / update / remove / list / toggle.
+      // Skills are files in the agent's workspace; the next turn re-reads
+      // them, so every change is live with no restart. Local-only.
+      case "GET /agentina/v1/skills": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const agentId = new URL(req.url ?? "/", "http://x").searchParams.get("agentId") ?? ""
+        const offer = this.state.data.agents.find((a) => a.id === agentId)
+        if (!offer) return this.json(res, 404, { error: `Unknown agent: ${agentId}` })
+        const ws = offer.adapter?.baseRoot
+        if (!ws) return this.json(res, 200, { skills: [] })
+        const off = new Set(offer.adapter?.disabledSkills ?? [])
+        return this.json(res, 200, { skills: listSkills(ws).map((s) => ({ ...s, on: !off.has(s.file) })) })
+      }
+      case "POST /agentina/v1/skills": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const offer = this.state.data.agents.find((a) => a.id === String(body.agentId ?? ""))
+        if (!offer) return this.json(res, 404, { error: `Unknown agent: ${body.agentId}` })
+        const ws = offer.adapter?.baseRoot
+        if (!ws) return this.json(res, 400, { error: "This agent has no workspace to hold skills" })
+        if (!body.file) return this.json(res, 400, { error: "Missing: file" })
+        let file: string
+        try { file = writeSkill(ws, String(body.file), String(body.content ?? "")) }
+        catch (e: any) { return this.json(res, 400, { error: e.message }) }
+        this.audit.append({ kind: "skill-edit", decision: "allowed", partyId: "local", agentId: offer.id, detail: `wrote ${file}` })
+        return this.json(res, 201, { agentId: offer.id, file })
+      }
+      case "POST /agentina/v1/skills/remove": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const offer = this.state.data.agents.find((a) => a.id === String(body.agentId ?? ""))
+        if (!offer) return this.json(res, 404, { error: `Unknown agent: ${body.agentId}` })
+        const ws = offer.adapter?.baseRoot
+        if (!ws) return this.json(res, 404, { error: "This agent has no workspace" })
+        let file: string
+        try { file = sanitizeSkillFile(String(body.file ?? "")) }
+        catch (e: any) { return this.json(res, 400, { error: e.message }) }
+        if (!removeSkill(ws, file)) return this.json(res, 404, { error: `No such skill: ${file}` })
+        // Drop it from the disabled set too, so a re-add starts enabled.
+        if (offer.adapter?.disabledSkills) offer.adapter.disabledSkills = offer.adapter.disabledSkills.filter((f) => f !== file)
+        this.state.save()
+        this.audit.append({ kind: "skill-edit", decision: "allowed", partyId: "local", agentId: offer.id, detail: `removed ${file}` })
+        return this.json(res, 200, { agentId: offer.id, removed: file })
+      }
+      case "POST /agentina/v1/skills/toggle": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const offer = this.state.data.agents.find((a) => a.id === String(body.agentId ?? ""))
+        if (!offer) return this.json(res, 404, { error: `Unknown agent: ${body.agentId}` })
+        if (!offer.adapter) return this.json(res, 400, { error: "This agent has no adapter" })
+        let file: string
+        try { file = sanitizeSkillFile(String(body.file ?? "")) }
+        catch (e: any) { return this.json(res, 400, { error: e.message }) }
+        const on = body.on !== false // default: activate
+        const off = new Set(offer.adapter.disabledSkills ?? [])
+        if (on) off.delete(file); else off.add(file)
+        offer.adapter.disabledSkills = [...off]
+        this.state.save()
+        this.audit.append({ kind: "skill-edit", decision: "allowed", partyId: "local", agentId: offer.id, detail: `${on ? "activated" : "disabled"} ${file}` })
+        return this.json(res, 200, { agentId: offer.id, file, on })
       }
 
       // How the owner shows up to contacts. Name and presentation are

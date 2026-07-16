@@ -173,6 +173,9 @@ export type AuditKind =
   | "session-open"
   | "session-close"
   | "auth-denied"
+  | "skill-edit"
+  | "skill-read"
+  | "skill-adopt"
 
 export interface AuditEntry {
   ts: string

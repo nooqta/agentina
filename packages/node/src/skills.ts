@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 
 // --- Agent skills, the agentx way ---
@@ -38,6 +38,54 @@ export function loadSkillsText(workspace: string, disabledSkills?: string[]): st
   }
 
   return parts.length ? `# Your skills\n\n${parts.join("\n\n")}` : ""
+}
+
+// --- Skill file management (add / update / remove) ---
+//
+// Skills are just files in the agent's workspace, so "managing" them is
+// writing/deleting those files — the next turn re-reads the folder, so
+// changes are live with no restart. Every name is sanitized to a bare
+// `<name>.md` (or the special `SKILL.md`): no slashes, no `..`, so a
+// managed skill can never write outside <workspace>/skills.
+
+export function sanitizeSkillFile(file: string): string {
+  const raw = String(file ?? "").trim()
+  if (raw === "SKILL.md") return raw
+  const base = raw.replace(/\.md$/i, "")
+  const name = base.replace(/[^A-Za-z0-9_-]/g, "")
+  if (!name) throw new Error("invalid skill file name")
+  return `${name}.md`
+}
+
+/** Absolute path of a skill file inside the agent's workspace. */
+export function skillPath(workspace: string, file: string): string {
+  const f = sanitizeSkillFile(file)
+  return f === "SKILL.md" ? join(workspace, "SKILL.md") : join(workspace, "skills", f)
+}
+
+/** Create or overwrite a skill file; returns the normalized file name. */
+export function writeSkill(workspace: string, file: string, content: string): string {
+  const f = sanitizeSkillFile(file)
+  if (f !== "SKILL.md") mkdirSync(join(workspace, "skills"), { recursive: true })
+  writeFileSync(skillPath(workspace, f), String(content ?? ""), "utf-8")
+  return f
+}
+
+/** Delete a skill file. Returns false if it wasn't there. */
+export function removeSkill(workspace: string, file: string): boolean {
+  const p = skillPath(workspace, file)
+  if (!existsSync(p)) return false
+  rmSync(p)
+  return true
+}
+
+/** Read one skill file's text, budget-capped — used to serve a single
+ *  shared skill without loading the whole workspace. */
+export function loadOneSkill(workspace: string, file: string): string | undefined {
+  const p = skillPath(workspace, file)
+  if (!existsSync(p)) return undefined
+  const body = readFileSync(p, "utf-8")
+  return body.length > PER_FILE_CAP ? body.slice(0, PER_FILE_CAP) + "\n… (truncated)" : body
 }
 
 /** Skill names only — for agent cards and the console. */
