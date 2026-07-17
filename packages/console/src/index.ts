@@ -139,7 +139,7 @@ export const CONSOLE_HTML = `<!doctype html>
     contact: null, peerInfo: {}, shares: {}, threads: {},
     chip: {}, conv: {},
     inviteLink: null, inviteBaseline: 0,
-    share: {}, agentNew: {}, edit: null, skillEdit: {}, form: {},
+    share: {}, agentNew: {}, edit: null, skillEdit: {}, adopt: {}, form: {},
     channelId: null, hopFlip: false, quickPicks: [],
     toastT: null, sugT: null
   };
@@ -276,6 +276,19 @@ export const CONSOLE_HTML = `<!doctype html>
     return (info.agents || [])
       .filter(function (a) { return granted[a.id] && a.id !== "echo"; })
       .map(function (a) { return { id: a.id, tags: a.tags || [], grant: granted[a.id] }; });
+  }
+  // Skills a contact currently shares with ME — skill scopes on the
+  // grants they've extended (empty agentIds, so grantedAgents skips them).
+  function grantedSkills(name) {
+    var info = S.peerInfo[name];
+    if (!info) return [];
+    var out = [];
+    (info.grantedToMe || []).forEach(function (g) {
+      (g.scopes || []).forEach(function (s) {
+        if (s.kind === "skill") out.push({ skillId: s.skillId, fromParty: g.fromParty, grant: g });
+      });
+    });
+    return out;
   }
   function partyNames() {
     var map = {};
@@ -762,6 +775,68 @@ export const CONSOLE_HTML = `<!doctype html>
       });
       d.appendChild(list);
     }
+
+    // Skills THEY share with you — adopt one onto your own agent.
+    var theirSkills = grantedSkills(c.name);
+    if (theirSkills.length) {
+      var ebS = E("div", "eyebrow", esc(c.name) + " shares skills with you");
+      css(ebS, { margin: "32px 0 12px" });
+      d.appendChild(ebS);
+      var slist = E("div", "stack-sm");
+      theirSkills.forEach(function (sk) {
+        var row = E("div", "rowcard");
+        var gl = E("div", "glyph", "SK");
+        css(gl, { width: "40px", height: "40px", borderRadius: "12px", background: GREEN_BG, color: GREEN_D, fontSize: "14px" });
+        row.appendChild(gl);
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", "mono", esc(sk.skillId)), { fontSize: "14px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }));
+        mid.appendChild(css(E("div", null, "Adopt it onto one of your agents"), { fontSize: "13.5px", color: "#5f6368" }));
+        row.appendChild(mid);
+        if (sk.grant && sk.grant.expiresAt) {
+          var ttl = E("div", "pill", esc(countdown(sk.grant.expiresAt)));
+          css(ttl, { color: AMBER, background: AMBER_BG });
+          row.appendChild(ttl);
+        }
+        var adopt = B("", "Adopt", function () { S.adopt = { skillId: sk.skillId, fromParty: sk.fromParty }; go("adoptSkill"); });
+        css(adopt, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", boxShadow: "0 3px 0 " + BLUE_D });
+        row.appendChild(adopt);
+        slist.appendChild(row);
+      });
+      d.appendChild(slist);
+    }
+    return d;
+  };
+
+  SCREENS.adoptSkill = function () {
+    var d = screenRoot("adoptSkill");
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    d.appendChild(E("div", "title2", "Adopt onto which agent?"));
+    d.appendChild(css(E("div", "sub2", "Your agent reads " + esc((S.adopt || {}).skillId || "") + " live, on the owner's machine, every answer. They can revoke it anytime."), {}));
+    var agents = myAgents();
+    if (!agents.length) {
+      var blank = E("div", null, "You have no agents yet — create one in My agents first.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center", lineHeight: "1.5" });
+      d.appendChild(blank);
+      return d;
+    }
+    var list = E("div", "stack-sm");
+    agents.forEach(function (a) {
+      var b = B("card", "", function () {
+        api("POST", "/skills/adopt", { agentId: a.id, fromParty: S.adopt.fromParty, skillId: S.adopt.skillId, label: S.adopt.skillId }).then(function () {
+          toast("Adopted — " + a.id + " uses it on its next answer");
+          refresh().then(back);
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(b, { display: "flex", alignItems: "center", gap: "14px", width: "100%", textAlign: "left" });
+      b.innerHTML =
+        "<div class='glyph' style='width:44px;height:44px;border-radius:14px;background:" + GREEN_BG + ";color:" + GREEN_D + ";font-size:14px'>AI</div>" +
+        "<div style='flex:1'><div style='font-size:16px;font-weight:700'>" + esc(a.id) + "</div></div>" +
+        "<div class='chev'>›</div>";
+      list.appendChild(b);
+    });
+    d.appendChild(list);
     return d;
   };
 
@@ -769,6 +844,7 @@ export const CONSOLE_HTML = `<!doctype html>
     if (kind === "folder") return { glyph: "F", bg: BLUE_BG, fg: BLUE };
     if (kind === "server") return { glyph: "SV", bg: AMBER_BG, fg: AMBER };
     if (kind === "repo") return { glyph: "R", bg: RED_BG, fg: RED };
+    if (kind === "skill") return { glyph: "SK", bg: GREEN_BG, fg: GREEN_D };
     return { glyph: "AI", bg: GREEN_BG, fg: GREEN_D };
   }
   function shareLabel(x) {
