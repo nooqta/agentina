@@ -1,4 +1,5 @@
 import type { AgentCard, AgentSkill } from "@agentina-mesh/protocol"
+import { seal, open } from "@agentina-mesh/protocol"
 import { A2AClient } from "./client"
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici"
 
@@ -31,6 +32,10 @@ export interface MeshConfig {
     timeout?: number
   }
   discovery?: "static"
+  /** This node's identity for E2E sealed boxes. When set and a peer has a
+   *  publicKey, task calls are sealed to that peer and box-authenticated;
+   *  otherwise they fall back to the bearer-token path. */
+  identity?: { partyId: string; secretKey: string }
 }
 
 /** Custom undici dispatcher used by sendTask: peer agent calls can
@@ -296,9 +301,27 @@ export class Mesh {
     if (!agent) throw new Error(`Peer "${peerName}" has no agents`)
 
     const url = `${state.peer.url}/task`
-    const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (state.peer.token) {
-      headers["Authorization"] = `Bearer ${state.peer.token}`
+    const inner = {
+      agent,
+      message: text,
+      ...(opts.senderAgentId ? { senderAgentId: opts.senderAgentId } : {}),
+      ...(typeof opts.freshSession === "boolean" ? { freshSession: opts.freshSession } : {}),
+      ...(opts.context ? { context: opts.context } : {}),
+    }
+    // E2E: when the peer has a public key and we hold an identity secret,
+    // seal the whole task to them (confidential + sender-authenticated).
+    // Otherwise fall back to the bearer-token path.
+    const idKey = this.config.identity?.secretKey
+    const sealed = Boolean(state.peer.publicKey && idKey)
+    const headers: Record<string, string> = { "Content-Type": sealed ? "text/plain" : "application/json" }
+    let bodyStr: string
+    if (sealed) {
+      headers["X-Agentina-Sealed"] = "1"
+      headers["X-Agentina-From"] = this.config.identity!.partyId
+      bodyStr = seal(JSON.stringify(inner), state.peer.publicKey!, idKey!)
+    } else {
+      if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
+      bodyStr = JSON.stringify(inner)
     }
 
     // Agent tasks frequently run for minutes. Two timeout layers to defeat:
@@ -314,13 +337,7 @@ export class Mesh {
       res = await undiciFetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          agent,
-          message: text,
-          ...(opts.senderAgentId ? { senderAgentId: opts.senderAgentId } : {}),
-          ...(typeof opts.freshSession === "boolean" ? { freshSession: opts.freshSession } : {}),
-          ...(opts.context ? { context: opts.context } : {}),
-        }),
+        body: bodyStr,
         signal: controller.signal,
         dispatcher: longTaskDispatcher,
       })
@@ -332,6 +349,18 @@ export class Mesh {
       throw e
     }
     clearTimeout(timer)
+
+    // Sealed reply: HTTP is always 200; the real status + body live inside
+    // the box. Open it (which also authenticates it came from this peer).
+    if (sealed) {
+      const opened = open(await res.text(), state.peer.publicKey!, idKey!)
+      if (!opened) throw new Error(`Peer "${peerName}" sent an unreadable sealed reply`)
+      const parsed = JSON.parse(opened) as { status: number; body: { content?: string; error?: string } }
+      if (parsed.status >= 400 || parsed.body?.error) {
+        throw new Error(`Peer "${peerName}" /task error: ${parsed.status}${parsed.body?.error ? `: ${parsed.body.error}` : ""}`)
+      }
+      return parsed.body?.content || "No response"
+    }
 
     // Read the body even on !res.ok so the caller sees the real reason
     // instead of an opaque "/task error: 500".

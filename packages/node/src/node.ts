@@ -9,7 +9,7 @@ import type {
 } from "@agentina-mesh/protocol"
 import { PROTOCOL_VERSION } from "@agentina-mesh/protocol"
 import { Mesh, encodeInvite, decodeInvite, type PeerRef } from "@agentina-mesh/peer"
-import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant, enforceSkillScope } from "@agentina-mesh/grants"
+import { decideAuth, CredentialStore, mintToken, JsonlAuditLog, GrantStore, enforceGrant, enforceSkillScope, seal, open } from "@agentina-mesh/grants"
 import { CONSOLE_HTML } from "@agentina-mesh/console"
 import { ChannelRouter, TelegramAdapter, GitLabAdapter, WhatsAppAdapter, GitHubAdapter, DiscordAdapter, SlackAdapter, type ChannelHost } from "@agentina-mesh/channels"
 import { NodeState, type ChannelKind } from "./state"
@@ -120,7 +120,11 @@ export class AgentinaNode {
     })
     this.adapter = opts.adapter ?? new EchoAdapter()
     this.mesh = new Mesh(
-      { peers: this.state.data.peers, healthCheck: { interval: 30, timeout: 10 } },
+      {
+        peers: this.state.data.peers,
+        healthCheck: { interval: 30, timeout: 10 },
+        ...(this.state.data.secretKey ? { identity: { partyId: this.party.id, secretKey: this.state.data.secretKey } } : {}),
+      },
       this.log,
     )
 
@@ -736,6 +740,61 @@ export class AgentinaNode {
     return this.resolveAdapter(offer).execute(offer, remoteSkillsText ? { ...task, remoteSkillsText } : task)
   }
 
+  /** Run a task for `callerParty`, enforcing grants + usage caps and
+   *  auditing. Returns a status + body so BOTH the plaintext /task route
+   *  and the E2E sealed handler share exactly one code path. */
+  private async processTask(body: any, callerParty: string): Promise<{ status: number; body: any }> {
+    const agentId = String(body.agent ?? "") || this.state.data.agents[0]?.id
+    const offer = this.state.data.agents.find((a) => a.id === agentId)
+    if (!offer) {
+      this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId, reason: "unknown-agent" })
+      return { status: 404, body: { error: `Unknown agent: ${agentId}` } }
+    }
+    // Grant enforcement — the security boundary. Pairing alone grants
+    // NOTHING: a remote party needs an active grant covering this agent.
+    let policy: { grantId: string; scopes: Scope[] } | undefined
+    if (callerParty !== "local") {
+      const decision = enforceGrant(this.grants.activeFor(callerParty), offer.id)
+      if (!decision.allowed) {
+        this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, reason: decision.reason })
+        return { status: 403, body: { error: `Forbidden: ${decision.reason} — ask ${this.party.name} to grant access to agent "${offer.id}"` } }
+      }
+      if (!this.grants.canUse(decision.grant.id)) {
+        this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: decision.grant.id, reason: "use-limit-reached" })
+        return { status: 403, body: { error: `Forbidden: this share has reached its use limit — ask ${this.party.name} to renew it` } }
+      }
+      policy = { grantId: decision.grant.id, scopes: decision.grant.scopes }
+    }
+    try {
+      const result = await this.execAgent(offer, {
+        message: String(body.message ?? ""),
+        fromPartyId: callerParty,
+        policy,
+        senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
+        context: (body.context as Record<string, unknown>) ?? undefined,
+      })
+      if (policy) this.grants.recordUse(policy.grantId)
+      this.audit.append({
+        kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id,
+        grantId: policy?.grantId, scopes: policy?.scopes,
+        detail: String(body.message ?? "").slice(0, 80),
+      })
+      if (callerParty !== "local") {
+        this.chat.append(callerParty, {
+          dir: "in", agent: offer.id,
+          text: String(body.message ?? "").slice(0, 2000),
+          reply: result.content.slice(0, 2000),
+        })
+      }
+      return { status: 200, body: { content: result.content } }
+    } catch (e: any) {
+      const msg = String(e?.message || e)
+      const isDenial = msg.startsWith("denied:")
+      this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: policy?.grantId, reason: isDenial ? "scope-denied" : "adapter-error", detail: msg.slice(0, 200) })
+      return { status: isDenial ? 403 : 500, body: { error: msg } }
+    }
+  }
+
   private upsertPeer(peer: PeerRef): void {
     const peers = this.state.data.peers
     const idx = peers.findIndex((p) => p.name === peer.name)
@@ -806,6 +865,25 @@ export class AgentinaNode {
       return this.json(res, 405, { error: "method not allowed" })
     }
 
+    // E2E sealed task: authenticated AND decrypted by the box, before the
+    // bearer path (a sealed call deliberately carries no token — opening
+    // the box IS the authentication). Falls through to bearer for peers
+    // that haven't exchanged keys yet.
+    if (route === "POST /task" && req.headers["x-agentina-sealed"]) {
+      const from = String(req.headers["x-agentina-from"] ?? "")
+      const pub = this.state.data.peers.find((p) => p.partyId === from)?.publicKey
+      const sec = this.state.data.secretKey
+      const opened = pub && sec ? open(await this.readRawBody(req), pub, sec) : null
+      if (!opened) {
+        this.audit.append({ kind: "auth-denied", decision: "denied", reason: "sealed-auth-failed", detail: "/task" })
+        return this.json(res, 401, { error: "Could not open or authenticate the sealed request" })
+      }
+      const result = await this.processTask(JSON.parse(opened), from)
+      res.writeHead(200, { "Content-Type": "text/plain", "X-Agentina-Sealed": "1" })
+      res.end(seal(JSON.stringify(result), pub!, sec!))
+      return
+    }
+
     // Everything else requires attribution (party token or loopback).
     const decision = decideAuth({
       remoteAddress: req.socket.remoteAddress ?? "",
@@ -872,69 +950,8 @@ export class AgentinaNode {
       }
 
       case "POST /task": {
-        const body = await this.readBody(req)
-        const agentId = String(body.agent ?? "") || this.state.data.agents[0]?.id
-        const offer = this.state.data.agents.find((a) => a.id === agentId)
-        if (!offer) {
-          this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId, reason: "unknown-agent" })
-          return this.json(res, 404, { error: `Unknown agent: ${agentId}` })
-        }
-
-        // Grant enforcement — the security boundary. Pairing alone grants
-        // NOTHING: a remote party needs an active grant covering this agent,
-        // and that grant's scopes become the task's policy (the jail the
-        // adapter enforces as defense-in-depth).
-        let policy: { grantId: string; scopes: Scope[] } | undefined
-        if (callerParty !== "local") {
-          const decision = enforceGrant(this.grants.activeFor(callerParty), offer.id)
-          if (!decision.allowed) {
-            this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, reason: decision.reason })
-            return this.json(res, 403, { error: `Forbidden: ${decision.reason} — ask ${this.party.name} to grant access to agent "${offer.id}"` })
-          }
-          // Usage cap — a granular limit on top of the scope jail: the
-          // grant is spent after maxUses invocations.
-          if (!this.grants.canUse(decision.grant.id)) {
-            this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: decision.grant.id, reason: "use-limit-reached" })
-            return this.json(res, 403, { error: `Forbidden: this share has reached its use limit — ask ${this.party.name} to renew it` })
-          }
-          policy = { grantId: decision.grant.id, scopes: decision.grant.scopes }
-        }
-
-        try {
-          const result = await this.execAgent(offer, {
-            message: String(body.message ?? ""),
-            fromPartyId: callerParty,
-            policy,
-            senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
-            context: (body.context as Record<string, unknown>) ?? undefined,
-          })
-          // Count this successful invocation against the grant's use cap
-          // (no-op when the grant has no maxUses).
-          if (policy) this.grants.recordUse(policy.grantId)
-          this.audit.append({
-            kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id,
-            grantId: policy?.grantId, scopes: policy?.scopes,
-            // A short preview turns the activity feed into a usable record
-            // ("ask · files — read brief.txt") instead of bare event names.
-            detail: String(body.message ?? "").slice(0, 80),
-          })
-          // The owner sees what their agents are asked — durable, per contact.
-          if (callerParty !== "local") {
-            this.chat.append(callerParty, {
-              dir: "in", agent: offer.id,
-              text: String(body.message ?? "").slice(0, 2000),
-              reply: result.content.slice(0, 2000),
-            })
-          }
-          return this.json(res, 200, { content: result.content })
-        } catch (e: any) {
-          // Scope denials from the adapter are policy decisions, not crashes —
-          // audit them as denied tasks and surface the reason.
-          const msg = String(e?.message || e)
-          const isDenial = msg.startsWith("denied:")
-          this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: policy?.grantId, reason: isDenial ? "scope-denied" : "adapter-error", detail: msg.slice(0, 200) })
-          return this.json(res, isDenial ? 403 : 500, { error: msg })
-        }
+        const r = await this.processTask(await this.readBody(req), callerParty)
+        return this.json(res, r.status, r.body)
       }
 
       // ----- grants: the counterparty-visible surface -----

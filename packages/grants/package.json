@@ -18,8 +18,7 @@
     "build": "tsup src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@agentina-mesh/protocol": "workspace:*",
-    "tweetnacl": "^1.0.3"
+    "@agentina-mesh/protocol": "workspace:*"
   },
   "license": "MIT"
 }

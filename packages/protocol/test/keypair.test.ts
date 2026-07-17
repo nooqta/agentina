@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { generateKeypair, seal, open } from "@agentina-mesh/grants"
+import { generateKeypair, seal, open } from "@agentina-mesh/protocol"
 
 // The cryptographic core of E2E: authenticated sealed boxes. Prove
 // round-trip, confidentiality, sender authentication, and fail-closed

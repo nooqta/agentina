@@ -53,9 +53,6 @@ importers:
       '@agentina-mesh/protocol':
         specifier: workspace:*
         version: link:../protocol
-      tweetnacl:
-        specifier: ^1.0.3
-        version: 1.0.3
 
   packages/node:
     dependencies:
@@ -84,7 +81,11 @@ importers:
         specifier: ^7.2.0
         version: 7.28.0
 
-  packages/protocol: {}
+  packages/protocol:
+    dependencies:
+      tweetnacl:
+        specifier: ^1.0.3
+        version: 1.0.3
 
 packages:
 
