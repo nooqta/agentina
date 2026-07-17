@@ -308,21 +308,16 @@ export class Mesh {
       ...(typeof opts.freshSession === "boolean" ? { freshSession: opts.freshSession } : {}),
       ...(opts.context ? { context: opts.context } : {}),
     }
-    // E2E: when the peer has a public key and we hold an identity secret,
-    // seal the whole task to them (confidential + sender-authenticated).
-    // Otherwise fall back to the bearer-token path.
-    const idKey = this.config.identity?.secretKey
-    const sealed = Boolean(state.peer.publicKey && idKey)
-    const headers: Record<string, string> = { "Content-Type": sealed ? "text/plain" : "application/json" }
-    let bodyStr: string
-    if (sealed) {
-      headers["X-Agentina-Sealed"] = "1"
-      headers["X-Agentina-From"] = this.config.identity!.partyId
-      bodyStr = seal(JSON.stringify(inner), state.peer.publicKey!, idKey!)
-    } else {
-      if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
-      bodyStr = JSON.stringify(inner)
+    // E2E: seal the whole task through the secure tunnel when the peer has
+    // a key; otherwise fall back to the bearer + plaintext /task path.
+    if (state.peer.publicKey && this.config.identity?.secretKey) {
+      const r = await this.secureCall(peerName, { op: "task", ...inner }, { timeoutMs: opts.timeoutMs ?? 30 * 60 * 1000 })
+      if (r.status >= 400 || r.body?.error) throw new Error(`Peer "${peerName}" /task error: ${r.status}${r.body?.error ? `: ${r.body.error}` : ""}`)
+      return r.body?.content || "No response"
     }
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
+    const bodyStr = JSON.stringify(inner)
 
     // Agent tasks frequently run for minutes. Two timeout layers to defeat:
     //   1. AbortController on our side — explicit request timeout. Default 30 min.
@@ -349,18 +344,6 @@ export class Mesh {
       throw e
     }
     clearTimeout(timer)
-
-    // Sealed reply: HTTP is always 200; the real status + body live inside
-    // the box. Open it (which also authenticates it came from this peer).
-    if (sealed) {
-      const opened = open(await res.text(), state.peer.publicKey!, idKey!)
-      if (!opened) throw new Error(`Peer "${peerName}" sent an unreadable sealed reply`)
-      const parsed = JSON.parse(opened) as { status: number; body: { content?: string; error?: string } }
-      if (parsed.status >= 400 || parsed.body?.error) {
-        throw new Error(`Peer "${peerName}" /task error: ${parsed.status}${parsed.body?.error ? `: ${parsed.body.error}` : ""}`)
-      }
-      return parsed.body?.content || "No response"
-    }
 
     // Read the body even on !res.ok so the caller sees the real reason
     // instead of an opaque "/task error: 500".
@@ -546,6 +529,49 @@ export class Mesh {
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 
+  /** Is there a sealed (E2E) channel to this peer — i.e. have we exchanged
+   *  keys AND do we hold an identity secret? */
+  canSeal(peerName: string): boolean {
+    const state = this.peers.get(peerName) || this.findPeerByNormalizedName(peerName)
+    return Boolean(state?.peer.publicKey && this.config.identity?.secretKey)
+  }
+
+  /**
+   * The E2E secure tunnel: seal `inner` to the peer, POST it to /secure,
+   * and open the sealed reply. One primitive carries every cross-boundary
+   * op (task, skill, grants) confidentially and box-authenticated. Returns
+   * the peer's { status, body }; throws on transport/crypto failure.
+   */
+  async secureCall(peerName: string, inner: unknown, opts: { timeoutMs?: number } = {}): Promise<{ status: number; body: any }> {
+    const state = this.peers.get(peerName) || this.findPeerByNormalizedName(peerName)
+    if (!state) throw new Error(`Unknown peer: ${peerName}`)
+    const idKey = this.config.identity?.secretKey
+    if (!state.peer.publicKey || !idKey) throw new Error(`No sealed channel to "${peerName}" — no key exchanged`)
+    const env = seal(JSON.stringify(inner), state.peer.publicKey, idKey)
+    const timeoutMs = opts.timeoutMs ?? 30 * 60 * 1000
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let res: Awaited<ReturnType<typeof undiciFetch>>
+    try {
+      res = await undiciFetch(`${state.peer.url}/secure`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "X-Agentina-From": this.config.identity!.partyId },
+        body: env,
+        signal: controller.signal,
+        dispatcher: longTaskDispatcher,
+      })
+    } catch (e: any) {
+      clearTimeout(timer)
+      if (controller.signal.aborted) throw new Error(`Peer "${peerName}" /secure timed out after ${Math.round(timeoutMs / 1000)}s`)
+      throw e
+    }
+    clearTimeout(timer)
+    if (res.status === 401) throw new Error(`Peer "${peerName}" rejected the sealed call (401)`)
+    const opened = open(await res.text(), state.peer.publicKey, idKey)
+    if (!opened) throw new Error(`Peer "${peerName}" sent an unreadable sealed reply`)
+    return JSON.parse(opened) as { status: number; body: any }
+  }
+
   /**
    * Fetch one shared skill's text from its owner (by party id), under
    * our skill grant. Fail-closed: any denial, missing peer, or network
@@ -556,10 +582,17 @@ export class Mesh {
     let state: PeerState | undefined
     for (const s of this.peers.values()) if (s.peer.partyId === ownerPartyId) { state = s; break }
     if (!state) return undefined
-    const url = `${state.peer.url}/skill?skillId=${encodeURIComponent(skillId)}`
-    const headers: Record<string, string> = {}
-    if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
     try {
+      // E2E: fetch the skill text through the sealed tunnel when possible —
+      // adopted-skill text is fetched every turn, so it must be encrypted.
+      if (state.peer.publicKey && this.config.identity?.secretKey) {
+        const r = await this.secureCall(state.peer.name, { op: "skill", skillId }, { timeoutMs: 15_000 })
+        if (r.status !== 200 || typeof r.body?.text !== "string") return undefined
+        return { text: r.body.text, version: String(r.body.version ?? "") }
+      }
+      const url = `${state.peer.url}/skill?skillId=${encodeURIComponent(skillId)}`
+      const headers: Record<string, string> = {}
+      if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
       const res = await fetch(url, { headers })
       if (!res.ok) return undefined
       const j = (await res.json()) as { text?: string; version?: string }

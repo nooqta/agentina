@@ -795,6 +795,54 @@ export class AgentinaNode {
     }
   }
 
+  /** Serve one shared skill's text to a grantee, gated by a skill grant. */
+  private processSkillFetch(skillId: string, callerParty: string): { status: number; body: any } {
+    if (callerParty === "local") return { status: 400, body: { error: "the owner reads skills from disk, not over the mesh" } }
+    const decision = enforceSkillScope(this.grants.activeFor(callerParty), skillId)
+    if (!decision.allowed) {
+      this.audit.append({ kind: "skill-read", decision: "denied", partyId: callerParty, reason: decision.reason, detail: skillId })
+      return { status: 403, body: { error: `Forbidden: skill "${skillId}" is not shared with you` } }
+    }
+    const [agentId, ...rest] = skillId.split(":")
+    const ws = this.state.data.agents.find((a) => a.id === agentId)?.adapter?.baseRoot
+    const text = ws ? loadOneSkill(ws, rest.join(":")) : undefined
+    if (text === undefined) {
+      this.audit.append({ kind: "skill-read", decision: "denied", partyId: callerParty, reason: "gone", detail: skillId })
+      return { status: 404, body: { error: `Skill no longer exists: ${skillId}` } }
+    }
+    const version = createHash("sha1").update(text).digest("hex").slice(0, 12)
+    this.audit.append({ kind: "skill-read", decision: "allowed", partyId: callerParty, grantId: decision.grant.id, detail: skillId })
+    return { status: 200, body: { skillId, version, text } }
+  }
+
+  /** What THIS node has granted to `callerParty` — exactly that, nothing else. */
+  private processGrantsList(callerParty: string): { status: number; body: any } {
+    return { status: 200, body: { grants: this.grants.activeFor(callerParty) } }
+  }
+
+  /** A remote party proposes a grant; it waits for the owner to approve. */
+  private processGrantsPropose(body: any, callerParty: string): { status: number; body: any } {
+    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : []
+    const scopes = (Array.isArray(body.scopes) ? body.scopes : []) as Scope[]
+    const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined
+    const proposed = this.grants.propose({ fromParty: this.party.id, toParty: callerParty, agentIds, scopes, expiresAt })
+    this.audit.append({ kind: "grant-create", decision: "allowed", partyId: callerParty, grantId: proposed.id, reason: "proposed", scopes })
+    return { status: 202, body: proposed }
+  }
+
+  /** Route one opened secure-tunnel request to its handler. Every peer-
+   *  reachable operation flows through here when sealed, so the whole
+   *  cross-boundary surface — tasks, skills, grants — is E2E encrypted. */
+  private async dispatchSecure(inner: any, from: string): Promise<{ status: number; body: any }> {
+    switch (String(inner.op ?? "")) {
+      case "task": return this.processTask(inner, from)
+      case "skill": return this.processSkillFetch(String(inner.skillId ?? ""), from)
+      case "grants.list": return this.processGrantsList(from)
+      case "grants.propose": return this.processGrantsPropose(inner, from)
+      default: return { status: 404, body: { error: `Unknown secure op: ${inner.op}` } }
+    }
+  }
+
   private upsertPeer(peer: PeerRef): void {
     const peers = this.state.data.peers
     const idx = peers.findIndex((p) => p.name === peer.name)
@@ -865,21 +913,23 @@ export class AgentinaNode {
       return this.json(res, 405, { error: "method not allowed" })
     }
 
-    // E2E sealed task: authenticated AND decrypted by the box, before the
-    // bearer path (a sealed call deliberately carries no token — opening
-    // the box IS the authentication). Falls through to bearer for peers
-    // that haven't exchanged keys yet.
-    if (route === "POST /task" && req.headers["x-agentina-sealed"]) {
+    // E2E secure tunnel: EVERY peer-reachable operation (task, skill,
+    // grants) rides one sealed endpoint. Authenticated AND decrypted by
+    // the box, before the bearer path — opening the box IS the
+    // authentication (a sealed call carries no token), and the sender is
+    // whoever's public key opens it. Un-keyed peers still use the
+    // plaintext routes below.
+    if (route === "POST /secure") {
       const from = String(req.headers["x-agentina-from"] ?? "")
       const pub = this.state.data.peers.find((p) => p.partyId === from)?.publicKey
       const sec = this.state.data.secretKey
       const opened = pub && sec ? open(await this.readRawBody(req), pub, sec) : null
       if (!opened) {
-        this.audit.append({ kind: "auth-denied", decision: "denied", reason: "sealed-auth-failed", detail: "/task" })
+        this.audit.append({ kind: "auth-denied", decision: "denied", reason: "sealed-auth-failed", detail: "/secure" })
         return this.json(res, 401, { error: "Could not open or authenticate the sealed request" })
       }
-      const result = await this.processTask(JSON.parse(opened), from)
-      res.writeHead(200, { "Content-Type": "text/plain", "X-Agentina-Sealed": "1" })
+      const result = await this.dispatchSecure(JSON.parse(opened), from)
+      res.writeHead(200, { "Content-Type": "text/plain" })
       res.end(seal(JSON.stringify(result), pub!, sec!))
       return
     }
@@ -925,28 +975,8 @@ export class AgentinaNode {
       // so this never widens what the caller can invoke.
       case "GET /skill": {
         const skillId = new URL(req.url ?? "/", "http://x").searchParams.get("skillId") ?? ""
-        if (callerParty === "local") return this.json(res, 400, { error: "the owner reads skills from disk, not over the mesh" })
-        const decision = enforceSkillScope(this.grants.activeFor(callerParty), skillId)
-        if (!decision.allowed) {
-          this.audit.append({ kind: "skill-read", decision: "denied", partyId: callerParty, reason: decision.reason, detail: skillId })
-          return this.json(res, 403, { error: `Forbidden: skill "${skillId}" is not shared with you` })
-        }
-        const [agentId, ...rest] = skillId.split(":")
-        const ws = this.state.data.agents.find((a) => a.id === agentId)?.adapter?.baseRoot
-        const text = ws ? loadOneSkill(ws, rest.join(":")) : undefined
-        if (text === undefined) {
-          this.audit.append({ kind: "skill-read", decision: "denied", partyId: callerParty, reason: "gone", detail: skillId })
-          return this.json(res, 404, { error: `Skill no longer exists: ${skillId}` })
-        }
-        const version = createHash("sha1").update(text).digest("hex").slice(0, 12)
-        if (String(req.headers["if-none-match"] ?? "") === version) {
-          this.audit.append({ kind: "skill-read", decision: "allowed", partyId: callerParty, grantId: decision.grant.id, detail: `${skillId} (unchanged)` })
-          res.writeHead(304, { ETag: version }); res.end(); return
-        }
-        this.audit.append({ kind: "skill-read", decision: "allowed", partyId: callerParty, grantId: decision.grant.id, detail: skillId })
-        res.writeHead(200, { "Content-Type": "application/json", ETag: version })
-        res.end(JSON.stringify({ skillId, version, text }))
-        return
+        const r = this.processSkillFetch(skillId, callerParty)
+        return this.json(res, r.status, r.body)
       }
 
       case "POST /task": {
@@ -957,22 +987,20 @@ export class AgentinaNode {
       // ----- grants: the counterparty-visible surface -----
       case "GET /agentina/v1/grants": {
         if (callerParty === "local") return this.json(res, 200, { grants: this.grants.list() })
-        // A party sees exactly what was extended to THEM — nothing else.
-        return this.json(res, 200, { grants: this.grants.activeFor(callerParty) })
+        const r = this.processGrantsList(callerParty)
+        return this.json(res, r.status, r.body)
       }
       case "POST /agentina/v1/grants": {
         const body = await this.readBody(req)
-        const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : []
-        const scopes = (Array.isArray(body.scopes) ? body.scopes : []) as Scope[]
-        const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined
         if (callerParty === "local") {
+          const agentIds = Array.isArray(body.agentIds) ? body.agentIds.map(String) : []
+          const scopes = (Array.isArray(body.scopes) ? body.scopes : []) as Scope[]
+          const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined
           const grant = this.grantAccess(String(body.toParty ?? ""), agentIds, scopes, expiresAt)
           return this.json(res, 201, grant)
         }
-        // A remote party PROPOSES; the owner approves from their side.
-        const proposed = this.grants.propose({ fromParty: this.party.id, toParty: callerParty, agentIds, scopes, expiresAt })
-        this.audit.append({ kind: "grant-create", decision: "allowed", partyId: callerParty, grantId: proposed.id, reason: "proposed", scopes })
-        return this.json(res, 202, proposed)
+        const r = this.processGrantsPropose(body, callerParty)
+        return this.json(res, r.status, r.body)
       }
 
       // ----- loopback-only control surface (CLI / local console) -----
@@ -1387,11 +1415,16 @@ export class AgentinaNode {
         if (!peer) return this.json(res, 404, { error: `Unknown peer: ${peerName}` })
         let grantedToMe: unknown[] = []
         try {
-          const r = await fetch(`${peer.url}/agentina/v1/grants`, {
-            headers: peer.token ? { Authorization: `Bearer ${peer.token}` } : {},
-            signal: AbortSignal.timeout(10_000),
-          })
-          if (r.ok) grantedToMe = ((await r.json()) as { grants?: unknown[] }).grants ?? []
+          if (this.mesh.canSeal(peerName)) {
+            const r = await this.mesh.secureCall(peerName, { op: "grants.list" }, { timeoutMs: 10_000 })
+            if (r.status === 200) grantedToMe = r.body?.grants ?? []
+          } else {
+            const r = await fetch(`${peer.url}/agentina/v1/grants`, {
+              headers: peer.token ? { Authorization: `Bearer ${peer.token}` } : {},
+              signal: AbortSignal.timeout(10_000),
+            })
+            if (r.ok) grantedToMe = ((await r.json()) as { grants?: unknown[] }).grants ?? []
+          }
         } catch { /* peer unreachable — return what we know */ }
         const dir = this.mesh.directory().find((p) => p.peer === peerName)
         return this.json(res, 200, {
@@ -1485,14 +1518,21 @@ export class AgentinaNode {
         else if (kind === "skill") payload = { agentIds: [], scopes: [{ kind: "skill", skillId: value }] }
         else return this.json(res, 400, { error: "Request kind must be agent or skill" })
         try {
-          const r = await fetch(`${peer.url}/agentina/v1/grants`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...(peer.token ? { Authorization: `Bearer ${peer.token}` } : {}) },
-            body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(10_000),
-          })
-          if (!r.ok) return this.json(res, r.status, { error: `${peer.name} rejected the request (${r.status})` })
-          const proposed = await r.json()
+          let proposed: unknown
+          if (this.mesh.canSeal(peer.name)) {
+            const r = await this.mesh.secureCall(peer.name, { op: "grants.propose", ...payload }, { timeoutMs: 10_000 })
+            if (r.status >= 400) return this.json(res, r.status, { error: r.body?.error ?? `${peer.name} rejected the request` })
+            proposed = r.body
+          } else {
+            const r = await fetch(`${peer.url}/agentina/v1/grants`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(peer.token ? { Authorization: `Bearer ${peer.token}` } : {}) },
+              body: JSON.stringify(payload),
+              signal: AbortSignal.timeout(10_000),
+            })
+            if (!r.ok) return this.json(res, r.status, { error: `${peer.name} rejected the request (${r.status})` })
+            proposed = await r.json()
+          }
           this.audit.append({ kind: "grant-create", decision: "allowed", partyId: peer.partyId, reason: "requested", detail: `${kind}:${value}` })
           return this.json(res, 202, { requested: proposed })
         } catch (e: any) {
