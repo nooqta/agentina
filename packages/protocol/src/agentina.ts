@@ -23,6 +23,9 @@ export interface Party {
   id: string
   name: string
   kind: PartyKind
+  /** Curve25519 public key (base64) for end-to-end sealed boxes on the
+   *  peer link. Advertised; the secret half never leaves the node. */
+  publicKey?: string
 }
 
 /** How a counterparty authenticates. MVP is a bearer pair — two
@@ -61,6 +64,12 @@ export interface Grant {
   agentIds: string[]
   scopes: Scope[]
   expiresAt?: string
+  /** Optional usage cap — the total number of invocations this grant
+   *  permits before it's spent. Composes with expiresAt: a share can be
+   *  both time-boxed and use-boxed. */
+  limits?: { maxUses?: number }
+  /** Invocations recorded against the cap so far. */
+  uses?: number
   status: "proposed" | "active" | "revoked"
   createdAt: string
 }
@@ -81,6 +90,22 @@ export interface AdapterSpec {
   /** Skill files (by name) the owner switched off in the console —
    *  they stay on disk but are not injected into the prompt. */
   disabledSkills?: string[]
+  /** Skills this agent has ADOPTED from other parties, live-referenced:
+   *  fetched from the owner per turn under a skill grant, so revoke and
+   *  TTL apply. Pointers, not copies — the text never lives here. */
+  adoptedSkills?: AdoptedSkillRef[]
+}
+
+/** A live-referenced skill an agent adopted from another party. The
+ *  adopter's node fetches `skillId` from `fromParty` each turn; the
+ *  owner's grant decides whether the text still comes back. */
+export interface AdoptedSkillRef {
+  /** Owner party id — who serves the skill. */
+  fromParty: string
+  /** "<ownerAgentId>:<file>" — the owner's skill identifier. */
+  skillId: string
+  /** Display label, party-prefixed to avoid clashing with local skills. */
+  label: string
 }
 
 /** An agent a party exposes to the mesh. `lifecycle` distinguishes
@@ -124,6 +149,9 @@ export interface InvitePayload {
   /** One-time redemption token, consumed by /pair/complete. */
   inviteToken: string
   partyName: string
+  /** Inviter's Curve25519 public key, so the invitee can seal the
+   *  pair-complete call and every call after it. */
+  publicKey?: string
   protocol: typeof PROTOCOL_VERSION
 }
 
@@ -173,6 +201,9 @@ export type AuditKind =
   | "session-open"
   | "session-close"
   | "auth-denied"
+  | "skill-edit"
+  | "skill-read"
+  | "skill-adopt"
 
 export interface AuditEntry {
   ts: string

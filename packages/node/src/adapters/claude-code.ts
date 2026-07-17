@@ -83,7 +83,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const bridgeHint = mcpConfig
       ? "You have agentina tools: use list_peer_shares to see what other parties currently share with your owner, and ask_peer to use those shares (read shared folders, query shared agents). When asked about something another party shared, CHECK with list_peer_shares before saying you can't see it."
       : undefined
-    const appendParts = [this.opts.systemPrompt?.trim(), bridgeHint, skillsText].filter(Boolean)
+    const appendParts = [this.opts.systemPrompt?.trim(), bridgeHint, skillsText, task.remoteSkillsText].filter(Boolean)
     if (mcpConfig) tools = [...tools, "mcp__agentina__list_peer_shares", "mcp__agentina__ask_peer"]
     const args = [
       "-p", task.message,

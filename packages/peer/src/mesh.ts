@@ -1,4 +1,5 @@
 import type { AgentCard, AgentSkill } from "@agentina-mesh/protocol"
+import { seal, open } from "@agentina-mesh/protocol"
 import { A2AClient } from "./client"
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici"
 
@@ -17,6 +18,9 @@ export interface PeerRef {
   token?: string
   /** Party that owns the peer node (agentina pairing sets this). */
   partyId?: string
+  /** Peer's Curve25519 public key (base64) — set at pairing, used to
+   *  seal the E2E box on every call to them. */
+  publicKey?: string
 }
 
 export interface MeshConfig {
@@ -28,6 +32,10 @@ export interface MeshConfig {
     timeout?: number
   }
   discovery?: "static"
+  /** This node's identity for E2E sealed boxes. When set and a peer has a
+   *  publicKey, task calls are sealed to that peer and box-authenticated;
+   *  otherwise they fall back to the bearer-token path. */
+  identity?: { partyId: string; secretKey: string }
 }
 
 /** Custom undici dispatcher used by sendTask: peer agent calls can
@@ -293,10 +301,23 @@ export class Mesh {
     if (!agent) throw new Error(`Peer "${peerName}" has no agents`)
 
     const url = `${state.peer.url}/task`
-    const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (state.peer.token) {
-      headers["Authorization"] = `Bearer ${state.peer.token}`
+    const inner = {
+      agent,
+      message: text,
+      ...(opts.senderAgentId ? { senderAgentId: opts.senderAgentId } : {}),
+      ...(typeof opts.freshSession === "boolean" ? { freshSession: opts.freshSession } : {}),
+      ...(opts.context ? { context: opts.context } : {}),
     }
+    // E2E: seal the whole task through the secure tunnel when the peer has
+    // a key; otherwise fall back to the bearer + plaintext /task path.
+    if (state.peer.publicKey && this.config.identity?.secretKey) {
+      const r = await this.secureCall(peerName, { op: "task", ...inner }, { timeoutMs: opts.timeoutMs ?? 30 * 60 * 1000 })
+      if (r.status >= 400 || r.body?.error) throw new Error(`Peer "${peerName}" /task error: ${r.status}${r.body?.error ? `: ${r.body.error}` : ""}`)
+      return r.body?.content || "No response"
+    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
+    const bodyStr = JSON.stringify(inner)
 
     // Agent tasks frequently run for minutes. Two timeout layers to defeat:
     //   1. AbortController on our side — explicit request timeout. Default 30 min.
@@ -311,13 +332,7 @@ export class Mesh {
       res = await undiciFetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-          agent,
-          message: text,
-          ...(opts.senderAgentId ? { senderAgentId: opts.senderAgentId } : {}),
-          ...(typeof opts.freshSession === "boolean" ? { freshSession: opts.freshSession } : {}),
-          ...(opts.context ? { context: opts.context } : {}),
-        }),
+        body: bodyStr,
         signal: controller.signal,
         dispatcher: longTaskDispatcher,
       })
@@ -512,6 +527,79 @@ export class Mesh {
   authHeaders(peerName: string): Record<string, string> {
     const token = this.peers.get(peerName)?.peer.token
     return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  /** Is there a sealed (E2E) channel to this peer — i.e. have we exchanged
+   *  keys AND do we hold an identity secret? */
+  canSeal(peerName: string): boolean {
+    const state = this.peers.get(peerName) || this.findPeerByNormalizedName(peerName)
+    return Boolean(state?.peer.publicKey && this.config.identity?.secretKey)
+  }
+
+  /**
+   * The E2E secure tunnel: seal `inner` to the peer, POST it to /secure,
+   * and open the sealed reply. One primitive carries every cross-boundary
+   * op (task, skill, grants) confidentially and box-authenticated. Returns
+   * the peer's { status, body }; throws on transport/crypto failure.
+   */
+  async secureCall(peerName: string, inner: unknown, opts: { timeoutMs?: number } = {}): Promise<{ status: number; body: any }> {
+    const state = this.peers.get(peerName) || this.findPeerByNormalizedName(peerName)
+    if (!state) throw new Error(`Unknown peer: ${peerName}`)
+    const idKey = this.config.identity?.secretKey
+    if (!state.peer.publicKey || !idKey) throw new Error(`No sealed channel to "${peerName}" — no key exchanged`)
+    const env = seal(JSON.stringify(inner), state.peer.publicKey, idKey)
+    const timeoutMs = opts.timeoutMs ?? 30 * 60 * 1000
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let res: Awaited<ReturnType<typeof undiciFetch>>
+    try {
+      res = await undiciFetch(`${state.peer.url}/secure`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "X-Agentina-From": this.config.identity!.partyId },
+        body: env,
+        signal: controller.signal,
+        dispatcher: longTaskDispatcher,
+      })
+    } catch (e: any) {
+      clearTimeout(timer)
+      if (controller.signal.aborted) throw new Error(`Peer "${peerName}" /secure timed out after ${Math.round(timeoutMs / 1000)}s`)
+      throw e
+    }
+    clearTimeout(timer)
+    if (res.status === 401) throw new Error(`Peer "${peerName}" rejected the sealed call (401)`)
+    const opened = open(await res.text(), state.peer.publicKey, idKey)
+    if (!opened) throw new Error(`Peer "${peerName}" sent an unreadable sealed reply`)
+    return JSON.parse(opened) as { status: number; body: any }
+  }
+
+  /**
+   * Fetch one shared skill's text from its owner (by party id), under
+   * our skill grant. Fail-closed: any denial, missing peer, or network
+   * error returns undefined, so a revoked or offline skill simply
+   * vanishes from the adopting agent's next turn.
+   */
+  async fetchSkill(ownerPartyId: string, skillId: string): Promise<{ text: string; version: string } | undefined> {
+    let state: PeerState | undefined
+    for (const s of this.peers.values()) if (s.peer.partyId === ownerPartyId) { state = s; break }
+    if (!state) return undefined
+    try {
+      // E2E: fetch the skill text through the sealed tunnel when possible —
+      // adopted-skill text is fetched every turn, so it must be encrypted.
+      if (state.peer.publicKey && this.config.identity?.secretKey) {
+        const r = await this.secureCall(state.peer.name, { op: "skill", skillId }, { timeoutMs: 15_000 })
+        if (r.status !== 200 || typeof r.body?.text !== "string") return undefined
+        return { text: r.body.text, version: String(r.body.version ?? "") }
+      }
+      const url = `${state.peer.url}/skill?skillId=${encodeURIComponent(skillId)}`
+      const headers: Record<string, string> = {}
+      if (state.peer.token) headers["Authorization"] = `Bearer ${state.peer.token}`
+      const res = await fetch(url, { headers })
+      if (!res.ok) return undefined
+      const j = (await res.json()) as { text?: string; version?: string }
+      return typeof j.text === "string" ? { text: j.text, version: String(j.version ?? "") } : undefined
+    } catch {
+      return undefined
+    }
   }
 
   /**

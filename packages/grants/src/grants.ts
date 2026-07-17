@@ -24,7 +24,7 @@ export class GrantStore {
   }
 
   /** Owner-authored grant — active immediately. */
-  create(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string }): Grant {
+  create(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string; limits?: { maxUses?: number } }): Grant {
     const grant: Grant = {
       id: newGrantId(),
       status: "active",
@@ -36,8 +36,27 @@ export class GrantStore {
     return grant
   }
 
+  /** Peek: is this grant still within its usage cap? True when there is
+   *  no cap. Denials for scope/quota are separate from expiry (activeFor
+   *  already drops expired/revoked grants). */
+  canUse(id: string): boolean {
+    const g = this.byId.get(id)
+    if (!g) return false
+    const max = g.limits?.maxUses
+    if (max == null) return true
+    return (g.uses ?? 0) < max
+  }
+
+  /** Count one successful use against the cap (persists via emit). */
+  recordUse(id: string): void {
+    const g = this.byId.get(id)
+    if (!g) return
+    g.uses = (g.uses ?? 0) + 1
+    this.emit()
+  }
+
   /** Counterparty-requested grant — waits for owner approval. */
-  propose(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string }): Grant {
+  propose(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string; limits?: { maxUses?: number } }): Grant {
     const grant: Grant = {
       id: newGrantId(),
       status: "proposed",
@@ -105,4 +124,23 @@ export function enforceGrant(grants: Grant[], agentId: string): GrantDecision {
     }
   }
   return { allowed: false, reason: "agent-not-granted" }
+}
+
+export type SkillDecision =
+  | { allowed: true; grant: Grant }
+  | { allowed: false; reason: "no-skill-grant" }
+
+/**
+ * May `toParty` read the skill `skillId`? A skill grant carries a
+ * `{ kind: "skill", skillId }` scope and — deliberately — an EMPTY
+ * agentIds, so it can never be mistaken by enforceGrant for permission
+ * to invoke an agent. A shared skill is reference material, not access.
+ */
+export function enforceSkillScope(grants: Grant[], skillId: string): SkillDecision {
+  for (const g of grants) {
+    for (const s of g.scopes) {
+      if (s.kind === "skill" && s.skillId === skillId) return { allowed: true, grant: g }
+    }
+  }
+  return { allowed: false, reason: "no-skill-grant" }
 }

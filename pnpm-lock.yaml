@@ -29,6 +29,10 @@ importers:
 
   packages/cli:
     dependencies:
+      undici:
+        specifier: ^7.2.0
+        version: 7.28.0
+    devDependencies:
       '@agentina-mesh/grants':
         specifier: workspace:*
         version: link:../grants
@@ -77,7 +81,11 @@ importers:
         specifier: ^7.2.0
         version: 7.28.0
 
-  packages/protocol: {}
+  packages/protocol:
+    dependencies:
+      tweetnacl:
+        specifier: ^1.0.3
+        version: 1.0.3
 
 packages:
 
@@ -831,6 +839,9 @@ packages:
       typescript:
         optional: true
 
+  tweetnacl@1.0.3:
+    resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
+
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
@@ -1483,6 +1494,8 @@ snapshots:
       - supports-color
       - tsx
       - yaml
+
+  tweetnacl@1.0.3: {}
 
   typescript@5.9.3: {}
 

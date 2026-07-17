@@ -1,4 +1,5 @@
 import type { ChannelAdapter, InboundMessage } from "./types"
+import { markdownToTelegramHtml } from "./telegram-format"
 
 // --- Telegram adapter: Bot API long-polling, zero dependencies ---
 //
@@ -71,18 +72,55 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async sendReply(msg: InboundMessage, text: string): Promise<void> {
-    // Telegram caps messages at 4096 chars — split on that boundary.
-    for (let i = 0; i < text.length || i === 0; i += 4096) {
-      const res = await fetch(`${this.api}/sendMessage`, {
+    // Chunk BEFORE the markdown→HTML conversion (the agentx pattern):
+    // 3900-char chunks leave headroom so tag expansion (**x** → <b>x</b>)
+    // can never push a message past Telegram's 4096 hard cap.
+    const chunks = splitMessageText(text || "(empty reply)", 3900)
+    for (const [index, chunk] of chunks.entries()) {
+      const base = {
+        chat_id: msg.chatId,
+        // Only the first chunk threads to the original message.
+        ...(index === 0 && (msg.meta as any)?.messageId
+          ? { reply_to_message_id: (msg.meta as any).messageId }
+          : {}),
+      }
+      const rich = await fetch(`${this.api}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: msg.chatId,
-          text: text.slice(i, i + 4096) || "(empty reply)",
-          reply_to_message_id: (msg.meta as any)?.messageId,
-        }),
+        body: JSON.stringify({ ...base, text: markdownToTelegramHtml(chunk), parse_mode: "HTML" }),
       })
-      if (!res.ok) this.log(`[telegram] sendMessage -> ${res.status}`)
+      if (rich.ok) continue
+      // Telegram rejected the HTML (unbalanced tags, exotic markdown) —
+      // the reply must still arrive: retry as plain text.
+      this.log(`[telegram] HTML sendMessage -> ${rich.status}, retrying plain`)
+      const plain = await fetch(`${this.api}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...base, text: chunk }),
+      })
+      if (!plain.ok) this.log(`[telegram] sendMessage -> ${plain.status}`)
     }
   }
+}
+
+/** Split long text at natural boundaries (paragraph > line > sentence >
+ *  word), never mid-tag — ported from agentx's message-chunks. */
+export function splitMessageText(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+  const chunks: string[] = []
+  let rest = text
+  while (rest.length > maxChars) {
+    const window = rest.slice(0, maxChars)
+    const splitAt = Math.max(
+      window.lastIndexOf("\n\n"),
+      window.lastIndexOf("\n"),
+      window.lastIndexOf(". "),
+      window.lastIndexOf(" "),
+    )
+    const cut = splitAt > Math.floor(maxChars * 0.55) ? splitAt + (window[splitAt] === "." ? 1 : 0) : maxChars
+    chunks.push(rest.slice(0, cut).trimEnd())
+    rest = rest.slice(cut).trimStart()
+  }
+  if (rest) chunks.push(rest)
+  return chunks
 }

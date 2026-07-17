@@ -139,7 +139,7 @@ export const CONSOLE_HTML = `<!doctype html>
     contact: null, peerInfo: {}, shares: {}, threads: {},
     chip: {}, conv: {},
     inviteLink: null, inviteBaseline: 0,
-    share: {}, agentNew: {}, edit: null, form: {},
+    share: {}, agentNew: {}, edit: null, skillEdit: {}, adopt: {}, form: {},
     channelId: null, hopFlip: false, quickPicks: [],
     toastT: null, sugT: null
   };
@@ -277,6 +277,38 @@ export const CONSOLE_HTML = `<!doctype html>
       .filter(function (a) { return granted[a.id] && a.id !== "echo"; })
       .map(function (a) { return { id: a.id, tags: a.tags || [], grant: granted[a.id] }; });
   }
+  function contactPartyId(name) {
+    var p = peers().filter(function (x) { return x.peer === name; })[0];
+    return p && p.partyId;
+  }
+  // Pending access requests FROM a contact (proposed grants to them).
+  function pendingFrom(name) {
+    var pid = contactPartyId(name);
+    return ((S.status && S.status.grants) || []).filter(function (g) { return g.status === "proposed" && g.toParty === pid; });
+  }
+  function pendingTotal() {
+    return ((S.status && S.status.grants) || []).filter(function (g) { return g.status === "proposed"; }).length;
+  }
+  function describeWant(g) {
+    if (g.agentIds && g.agentIds.length) return "the agent “" + g.agentIds.join(", ") + "”";
+    var sc = (g.scopes || [])[0];
+    if (sc && sc.kind === "skill") return "the skill “" + sc.skillId + "”";
+    if (sc && sc.kind === "fs") return "the folder " + sc.root;
+    return "access";
+  }
+  // Skills a contact currently shares with ME — skill scopes on the
+  // grants they've extended (empty agentIds, so grantedAgents skips them).
+  function grantedSkills(name) {
+    var info = S.peerInfo[name];
+    if (!info) return [];
+    var out = [];
+    (info.grantedToMe || []).forEach(function (g) {
+      (g.scopes || []).forEach(function (s) {
+        if (s.kind === "skill") out.push({ skillId: s.skillId, fromParty: g.fromParty, grant: g });
+      });
+    });
+    return out;
+  }
   function partyNames() {
     var map = {};
     peers().forEach(function (p) { if (p.partyId) map[p.partyId] = p.peer; });
@@ -374,7 +406,7 @@ export const CONSOLE_HTML = `<!doctype html>
   function goHome() { S.screen = peers().length ? "home" : "onboarding"; S.stack = []; render(); }
   function back() {
     if (cur() === "share" && S.share.step && S.share.step !== "done") {
-      var order = ["kind", "what", "access", "duration", "confirm"];
+      var order = S.share.kind === "skill" ? ["kind", "what", "duration", "confirm"] : ["kind", "what", "access", "duration", "confirm"];
       var i = order.indexOf(S.share.step);
       if (i > 0) { S.share.step = order[i - 1]; render(); return; }
     }
@@ -607,6 +639,12 @@ export const CONSOLE_HTML = `<!doctype html>
       css(st, { display: "flex", alignItems: "center", gap: "6px", fontSize: "14.5px", color: "#5f6368", marginTop: "2px" });
       mid.appendChild(st);
       card.appendChild(mid);
+      var asks = pendingFrom(p.peer).length;
+      if (asks) {
+        var badge = E("div", "pill", asks + (asks > 1 ? " asks" : " ask"));
+        css(badge, { color: "#ffffff", background: RED, fontWeight: "700", fontSize: "12.5px" });
+        card.appendChild(badge);
+      }
       card.appendChild(E("div", "chev", "›"));
       list.appendChild(card);
     });
@@ -728,6 +766,39 @@ export const CONSOLE_HTML = `<!doctype html>
     stack.appendChild(act);
     d.appendChild(stack);
 
+    // Access requests from this contact — approve or decline.
+    var pend = pendingFrom(c.name);
+    if (pend.length) {
+      var ebR = E("div", "eyebrow", esc(c.name) + " is asking you for access");
+      css(ebR, { margin: "28px 0 12px" });
+      d.appendChild(ebR);
+      var rlist = E("div", "stack-sm");
+      pend.forEach(function (g) {
+        var row = E("div", "rowcard");
+        css(row, { border: "2px solid #FFE08A", background: "#FFFBF0" });
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", null, "Wants " + esc(describeWant(g))), { fontSize: "15px", fontWeight: "700" }));
+        mid.appendChild(css(E("div", null, "Nothing is shared until you approve"), { fontSize: "13px", color: "#5f6368", marginTop: "2px" }));
+        row.appendChild(mid);
+        var no = B("", "Decline", function () {
+          api("POST", "/grants/deny", { id: g.id }).then(function () { toast("Declined"); refresh(); })["catch"](function (e) { toast(e.message); });
+        });
+        css(no, { border: "2px solid #F9C1C1", borderRadius: "12px", background: "#ffffff", color: RED, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 14px", flex: "none" });
+        row.appendChild(no);
+        var yes = B("", "Approve", function () {
+          api("POST", "/grants/approve", { id: g.id }).then(function () { toast("Approved — they can use it now"); refresh(); })["catch"](function (e) { toast(e.message); });
+        });
+        css(yes, { border: "none", borderRadius: "12px", background: GREEN, color: "#ffffff", fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", flex: "none", boxShadow: "0 3px 0 " + GREEN_D });
+        row.appendChild(yes);
+        rlist.appendChild(row);
+      });
+      d.appendChild(rlist);
+    }
+
+    var reqLink = B("linkbtn", "Request access from " + esc(c.name) + " →", function () { go("requestAccess"); });
+    css(reqLink, { alignSelf: "flex-start", padding: "0", marginTop: "14px" });
+    d.appendChild(reqLink);
+
     var mine = (S.shares[c.name] || []).filter(function (x) { return x.status === "active"; });
     if (mine.length) {
       var eb = E("div", "eyebrow", "You share with " + esc(c.name));
@@ -749,6 +820,12 @@ export const CONSOLE_HTML = `<!doctype html>
           css(ttl, { color: AMBER, background: AMBER_BG });
           row.appendChild(ttl);
         }
+        if (x.maxUses) {
+          var left = x.maxUses - (x.uses || 0);
+          var up = E("div", "pill", left > 0 ? left + " left" : "spent");
+          css(up, { color: left > 0 ? BLUE : RED, background: left > 0 ? BLUE_BG : RED_BG });
+          row.appendChild(up);
+        }
         var stop = B("", "Stop", function () {
           api("POST", "/shares/stop", { id: x.id }).then(function () {
             toast("Stopped — their next use is denied");
@@ -762,6 +839,114 @@ export const CONSOLE_HTML = `<!doctype html>
       });
       d.appendChild(list);
     }
+
+    // Skills THEY share with you — adopt one onto your own agent.
+    var theirSkills = grantedSkills(c.name);
+    if (theirSkills.length) {
+      var ebS = E("div", "eyebrow", esc(c.name) + " shares skills with you");
+      css(ebS, { margin: "32px 0 12px" });
+      d.appendChild(ebS);
+      var slist = E("div", "stack-sm");
+      theirSkills.forEach(function (sk) {
+        var row = E("div", "rowcard");
+        var gl = E("div", "glyph", "SK");
+        css(gl, { width: "40px", height: "40px", borderRadius: "12px", background: GREEN_BG, color: GREEN_D, fontSize: "14px" });
+        row.appendChild(gl);
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", "mono", esc(sk.skillId)), { fontSize: "14px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }));
+        mid.appendChild(css(E("div", null, "Adopt it onto one of your agents"), { fontSize: "13.5px", color: "#5f6368" }));
+        row.appendChild(mid);
+        if (sk.grant && sk.grant.expiresAt) {
+          var ttl = E("div", "pill", esc(countdown(sk.grant.expiresAt)));
+          css(ttl, { color: AMBER, background: AMBER_BG });
+          row.appendChild(ttl);
+        }
+        var adopt = B("", "Adopt", function () { S.adopt = { skillId: sk.skillId, fromParty: sk.fromParty }; go("adoptSkill"); });
+        css(adopt, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", boxShadow: "0 3px 0 " + BLUE_D });
+        row.appendChild(adopt);
+        slist.appendChild(row);
+      });
+      d.appendChild(slist);
+    }
+    return d;
+  };
+
+  SCREENS.adoptSkill = function () {
+    var d = screenRoot("adoptSkill");
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    d.appendChild(E("div", "title2", "Adopt onto which agent?"));
+    d.appendChild(css(E("div", "sub2", "Your agent reads " + esc((S.adopt || {}).skillId || "") + " live, on the owner's machine, every answer. They can revoke it anytime."), {}));
+    var agents = myAgents();
+    if (!agents.length) {
+      var blank = E("div", null, "You have no agents yet — create one in My agents first.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center", lineHeight: "1.5" });
+      d.appendChild(blank);
+      return d;
+    }
+    var list = E("div", "stack-sm");
+    agents.forEach(function (a) {
+      var b = B("card", "", function () {
+        api("POST", "/skills/adopt", { agentId: a.id, fromParty: S.adopt.fromParty, skillId: S.adopt.skillId, label: S.adopt.skillId }).then(function () {
+          toast("Adopted — " + a.id + " uses it on its next answer");
+          refresh().then(back);
+        })["catch"](function (e) { toast(e.message); });
+      });
+      css(b, { display: "flex", alignItems: "center", gap: "14px", width: "100%", textAlign: "left" });
+      b.innerHTML =
+        "<div class='glyph' style='width:44px;height:44px;border-radius:14px;background:" + GREEN_BG + ";color:" + GREEN_D + ";font-size:14px'>AI</div>" +
+        "<div style='flex:1'><div style='font-size:16px;font-weight:700'>" + esc(a.id) + "</div></div>" +
+        "<div class='chev'>›</div>";
+      list.appendChild(b);
+    });
+    d.appendChild(list);
+    return d;
+  };
+
+  SCREENS.requestAccess = function () {
+    var d = screenRoot("requestAccess");
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    var name = S.contact;
+    d.appendChild(E("div", "title2", "Request access from " + esc(name)));
+    d.appendChild(E("div", "sub2", "Ask for one of their agents or skills — it lands on their side to approve or decline. Nothing is shared until they say yes."));
+    var info = S.peerInfo[name] || {};
+    var have = {};
+    grantedAgents(name).forEach(function (a) { have[a.id] = 1; });
+    grantedSkills(name).forEach(function (s) { have[s.skillId] = 1; });
+    pendingFrom(name).forEach(function (g) { (g.agentIds || []).forEach(function (id) { have[id] = 1; }); (g.scopes || []).forEach(function (s) { if (s.kind === "skill") have[s.skillId] = 1; }); });
+    var items = (info.agents || []).filter(function (o) { return o.id !== "echo" && !have[o.id]; });
+    if (!items.length) {
+      var blank = E("div", null, "Nothing new to request — you already have (or asked for) everything " + esc(name) + " advertises.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center", lineHeight: "1.5" });
+      d.appendChild(blank);
+      return d;
+    }
+    var list = E("div", "stack-sm");
+    items.forEach(function (o) {
+      var isSkill = (o.tags || []).indexOf("skill") >= 0;
+      var row = E("div", "rowcard");
+      var gl = E("div", "glyph", isSkill ? "SK" : "AI");
+      css(gl, { width: "40px", height: "40px", borderRadius: "12px", background: GREEN_BG, color: GREEN_D, fontSize: "14px" });
+      row.appendChild(gl);
+      var mid = css(E("div"), { flex: "1", minWidth: "0" });
+      mid.appendChild(css(E("div", isSkill ? "mono" : null, esc(o.id)), { fontSize: "14.5px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }));
+      mid.appendChild(css(E("div", null, isSkill ? "A skill" : "An agent"), { fontSize: "13px", color: "#5f6368" }));
+      row.appendChild(mid);
+      var req = B("", "Request", function () {
+        req.disabled = true;
+        api("POST", "/grants/request", { peer: name, kind: isSkill ? "skill" : "agent", value: o.id }).then(function () {
+          toast("Requested — " + name + " will see it");
+          back();
+        })["catch"](function (e) { req.disabled = false; toast(e.message); });
+      });
+      css(req, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", flex: "none", boxShadow: "0 3px 0 " + BLUE_D });
+      row.appendChild(req);
+      list.appendChild(row);
+    });
+    d.appendChild(list);
     return d;
   };
 
@@ -769,6 +954,7 @@ export const CONSOLE_HTML = `<!doctype html>
     if (kind === "folder") return { glyph: "F", bg: BLUE_BG, fg: BLUE };
     if (kind === "server") return { glyph: "SV", bg: AMBER_BG, fg: AMBER };
     if (kind === "repo") return { glyph: "R", bg: RED_BG, fg: RED };
+    if (kind === "skill") return { glyph: "SK", bg: GREEN_BG, fg: GREEN_D };
     return { glyph: "AI", bg: GREEN_BG, fg: GREEN_D };
   }
   function shareLabel(x) {
@@ -950,7 +1136,8 @@ export const CONSOLE_HTML = `<!doctype html>
     folder: { glyph: "F", fg: BLUE, bg: BLUE_BG, label: "A folder", desc: "Files they can use", title: "Which folder?", sub: "They see this folder — and never anything above it. Sneaky “..” paths fail, guaranteed.", ph: "/path/to/folder", mono: true },
     agent: { glyph: "AI", fg: GREEN_D, bg: GREEN_BG, label: "One of my agents", desc: "It answers their questions", title: "Which agent?", sub: "It answers their questions — inside its own folder only.", ph: "agent name", mono: false },
     server: { glyph: "SV", fg: AMBER, bg: AMBER_BG, label: "A server", desc: "Run commands, scoped", title: "Which server?", sub: "Commands run through the share — credentials never leave your machine.", ph: "user@host", mono: true },
-    repo: { glyph: "R", fg: RED, bg: RED_BG, label: "A repository", desc: "Browse code, no keys", title: "Which repository?", sub: "They can browse it through your machine — no deploy keys handed over.", ph: "https://… or git@…", mono: true }
+    repo: { glyph: "R", fg: RED, bg: RED_BG, label: "A repository", desc: "Browse code, no keys", title: "Which repository?", sub: "They can browse it through your machine — no deploy keys handed over.", ph: "https://… or git@…", mono: true },
+    skill: { glyph: "SK", fg: GREEN_D, bg: GREEN_BG, label: "A skill", desc: "Know-how their agent uses", title: "Which skill?", sub: "Their agent reads it live, on your machine — edit or revoke it anytime, and every use is logged.", ph: "agent:skill.md", mono: true }
   };
   var DURATIONS = [
     { key: 3600, glyph: "1h", label: "1 hour", desc: "Quick help — gone before dinner" },
@@ -980,7 +1167,7 @@ export const CONSOLE_HTML = `<!doctype html>
       d.appendChild(E("div", "title2", "What do you want to share with " + esc(c.name) + "?"));
       d.appendChild(E("div", "sub2", "Exactly this, nothing else — and you can stop it anytime."));
       var grid = css(E("div"), { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" });
-      ["folder", "agent", "server", "repo"].forEach(function (k) {
+      ["folder", "agent", "server", "repo", "skill"].forEach(function (k) {
         var m = SHARE_KINDS[k];
         var b = B("card", "", function () {
           st.kind = k; st.value = ""; st.step = "what"; render();
@@ -1018,7 +1205,9 @@ export const CONSOLE_HTML = `<!doctype html>
       var next = B("btn btn-blue", "Continue", function () {
         if (!(st.value || "").trim()) { toast("Pick or type something first"); return; }
         st.value = st.value.trim();
-        st.step = "access"; render();
+        // A skill is read-only reference — skip the access step.
+        if (st.kind === "skill") { st.mode = "ro"; st.step = "duration"; } else { st.step = "access"; }
+        render();
       });
       css(next, { marginTop: "28px" });
       input.onkeydown = function (e) { if (e.key === "Enter") next.click(); };
@@ -1070,12 +1259,27 @@ export const CONSOLE_HTML = `<!doctype html>
         "<div style='font-size:18px;font-weight:700;word-break:break-all'>" + esc(st.value) + "</div></div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>" + (st.mode === "rw" ? "RW" : "RO") + "</div>" + (st.mode === "rw" ? "Read &amp; write" : "Look only — they can never change anything") + "</div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>TTL</div>" + (st.duration ? "Self-destructs after " + durText(st.duration).replace("for ", "") : "Until you stop it") + "</div>" +
+        "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>USE</div>" + (st.maxUses ? st.maxUses + " uses, then it's spent" : "Unlimited uses") + "</div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center;color:" + RED + "'>STOP</div>You can stop it anytime, in one tap</div>";
       d.appendChild(box);
+
+      // Skills are live-referenced every turn, so a use cap doesn't fit
+      // them — offer it for agents/folders/servers/repos only.
+      if (st.kind !== "skill") {
+        d.appendChild(css(E("div", null, "Limit how many times?"), { fontSize: "14px", fontWeight: "700", color: "#9aa0a6", margin: "20px 0 10px" }));
+        var useRow = css(E("div", "chips"), {});
+        [{ l: "Unlimited", v: 0 }, { l: "5 uses", v: 5 }, { l: "20 uses", v: 20 }, { l: "50 uses", v: 50 }].forEach(function (o) {
+          var sel = (st.maxUses || 0) === o.v;
+          useRow.appendChild(B("chip-sm" + (sel ? " sel" : ""), esc(o.l), function () { st.maxUses = o.v || undefined; render(); }));
+        });
+        d.appendChild(useRow);
+      }
+
       var goBtn = B("btn btn-green", "Share it", function () {
         goBtn.disabled = true;
         var body = { peer: c.name, kind: st.kind, value: st.value, mode: st.mode };
         if (st.duration) body.durationSeconds = st.duration;
+        if (st.maxUses) body.maxUses = st.maxUses;
         api("POST", "/shares", body).then(function () {
           st.step = "done";
           loadPeer(c.name, false);
@@ -1110,6 +1314,10 @@ export const CONSOLE_HTML = `<!doctype html>
       picks = myAgents().map(function (a) { return { label: a.id, value: a.id }; });
     } else if (st.kind === "folder") {
       picks = (S.quickPicks || []).map(function (q) { return { label: q.label, value: q.path }; });
+    } else if (st.kind === "skill") {
+      myAgents().forEach(function (a) {
+        (a.skillFiles || []).forEach(function (f) { picks.push({ label: a.id + " · " + f, value: a.id + ":" + f }); });
+      });
     }
     picks.slice(0, 6).forEach(function (p) {
       container.appendChild(B("sug", esc(p.label), function () {
@@ -1201,6 +1409,58 @@ export const CONSOLE_HTML = `<!doctype html>
     };
     go("agentEdit");
   }
+  // Pull the just-saved skill list back onto the open editor after an
+  // add/remove, so the agentEdit screen reflects disk without a reopen.
+  function reloadEditSkills() {
+    if (!S.edit) return;
+    var a = ((S.status && S.status.agents) || []).filter(function (x) { return x.id === S.edit.id; })[0];
+    if (a) S.edit.skills = (a.skills || []).map(function (s) { return { file: s.file, desc: s.desc, on: s.on }; });
+    render();
+  }
+  // Open the skill editor — blank for a new skill, or prefilled with the
+  // file's current content for an edit.
+  function openSkillEdit(agentId, file) {
+    if (!file) { S.skillEdit = { agentId: agentId, file: "", content: "", isNew: true }; go("skillEdit"); return; }
+    api("GET", "/skills/content?agentId=" + encodeURIComponent(agentId) + "&file=" + encodeURIComponent(file)).then(function (r) {
+      S.skillEdit = { agentId: agentId, file: r.file, content: r.content || "", isNew: false };
+      go("skillEdit");
+    })["catch"](function (e) { toast(e.message); });
+  }
+  SCREENS.skillEdit = function () {
+    var d = screenRoot("skillEdit");
+    var st = S.skillEdit || { file: "", content: "", isNew: true };
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    d.appendChild(E("div", "title2", st.isNew ? "New skill" : "Edit skill"));
+    d.appendChild(E("div", "sub2", "A markdown file the agent reads on its very next answer — no restart. Lead with a one-line summary."));
+    var name = E("input", "input mono");
+    css(name, { height: "50px", marginBottom: "16px" });
+    name.placeholder = "e.g. status-reports";
+    name.value = st.file;
+    name.disabled = !st.isNew;
+    if (!st.isNew) css(name, { opacity: "0.55", cursor: "not-allowed" });
+    name.oninput = function () { st.file = name.value; };
+    d.appendChild(name);
+    var ta = E("textarea", "input mono");
+    css(ta, { display: "block", width: "100%", minHeight: "320px", padding: "14px 16px", lineHeight: "1.55", resize: "vertical" });
+    ta.placeholder = "# Status reports — lead with what shipped, then blockers. Always cite the source file.";
+    ta.value = st.content;
+    ta.oninput = function () { st.content = ta.value; };
+    d.appendChild(ta);
+    var save = B("btn btn-blue", "Save skill", function () {
+      if (!(st.file || "").trim()) { toast("Give the skill a name first"); return; }
+      save.disabled = true;
+      api("POST", "/skills", { agentId: st.agentId, file: st.file.trim(), content: st.content }).then(function () {
+        toast("Saved — the next answer uses it");
+        return refresh();
+      }).then(function () { reloadEditSkills(); back(); })["catch"](function (e) { save.disabled = false; toast(e.message); });
+    });
+    css(save, { marginTop: "20px" });
+    d.appendChild(save);
+    return d;
+  };
+
   SCREENS.agentEdit = function () {
     var d = screenRoot("agentEdit");
     var ed = S.edit || { id: "?", skills: [] };
@@ -1261,22 +1521,39 @@ export const CONSOLE_HTML = `<!doctype html>
       var list = E("div", "stack-sm");
       ed.skills.forEach(function (sk) {
         var row = E("div", "rowcard");
-        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        var mid = B("", "", function () { openSkillEdit(ed.id, sk.file); });
+        css(mid, { flex: "1", minWidth: "0", background: "none", border: "none", textAlign: "left", cursor: "pointer", padding: "0" });
         mid.appendChild(css(E("div", "mono", esc(sk.file)), { fontSize: "13.5px", fontWeight: "700" }));
         if (sk.desc) mid.appendChild(css(E("div", null, esc(sk.desc)), { fontSize: "13.5px", color: "#5f6368", marginTop: "2px" }));
         row.appendChild(mid);
-        var tg = B("toggle", "<div></div>", function () { sk.on = !sk.on; render(); });
+        var tg = B("toggle", "<div></div>", function () {
+          sk.on = !sk.on;
+          tg.style.background = sk.on ? GREEN : "#dadce0";
+          tg.firstChild.style.left = sk.on ? "25px" : "3px";
+          api("POST", "/skills/toggle", { agentId: ed.id, file: sk.file, on: sk.on })["catch"](function (e) { toast(e.message); });
+        });
         tg.style.background = sk.on ? GREEN : "#dadce0";
         tg.firstChild.style.left = sk.on ? "25px" : "3px";
         row.appendChild(tg);
+        var rm = B("", "×", function () {
+          api("POST", "/skills/remove", { agentId: ed.id, file: sk.file }).then(function () {
+            toast("Removed " + sk.file);
+            refresh().then(reloadEditSkills);
+          })["catch"](function (e) { toast(e.message); });
+        });
+        css(rm, { border: "2px solid #F9C1C1", borderRadius: "10px", background: "#ffffff", color: RED, fontSize: "20px", fontWeight: "700", cursor: "pointer", width: "38px", height: "38px", flex: "none", lineHeight: "1", padding: "0" });
+        row.appendChild(rm);
         list.appendChild(row);
       });
       d.appendChild(list);
     } else {
-      var blank = E("div", null, "No skills yet — drop a .md file in <span class='mono' style='font-size:12.5px'>workspace/skills/</span> and it appears here.");
+      var blank = E("div", null, "No skills yet — add one below, or drop a .md file in <span class='mono' style='font-size:12.5px'>workspace/skills/</span>.");
       css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center" });
       d.appendChild(blank);
     }
+    var addSkill = B("linkbtn", "+ New skill", function () { openSkillEdit(ed.id, null); });
+    css(addSkill, { alignSelf: "flex-start", padding: "0", marginTop: "12px" });
+    d.appendChild(addSkill);
 
     // Channels — this agent's own faces on the outside world. Bind a
     // bot/number to it and talking to that bot IS talking to this agent.
@@ -1493,10 +1770,15 @@ export const CONSOLE_HTML = `<!doctype html>
       return "Your " + agent + " was used here" + (detail ? " — " + detail : "");
     }
     if (kind === "grant-create") {
-      if (e.reason === "proposed") return (who || "Someone") + " asked for access — approve it from your side or ignore it";
+      if (e.reason === "proposed") return (who || "Someone") + " asked for access — approve or decline it on their contact screen";
+      if (e.reason === "requested") return "You asked " + (who || "a contact") + " for access" + (detail ? " — " + detail : "");
+      if (e.reason === "approved") return "You approved " + (who || "a contact") + "’s access request";
       return "You shared with " + (who || "a contact") + (detail ? " — " + detail : "");
     }
-    if (kind === "grant-revoke") return "You stopped sharing with " + (who || "a contact");
+    if (kind === "grant-revoke") {
+      if (e.reason === "denied") return "You declined " + (who || "a contact") + "’s access request";
+      return "You stopped sharing with " + (who || "a contact");
+    }
     if (kind === "session-open") return "You shared something temporary with " + (who || "a contact") + " — it self-destructs";
     if (kind === "session-close") return "A temporary share ended" + (detail ? " (" + detail + ")" : "");
     if (kind === "auth-denied") return "Blocked: a request that isn't from one of your people";

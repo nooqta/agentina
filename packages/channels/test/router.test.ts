@@ -318,3 +318,34 @@ describe("SlackAdapter — events handling", () => {
     expect(got).toHaveLength(1)
   })
 })
+
+describe("Telegram rich formatting (ported from agentx)", () => {
+  it("converts Claude markdown to Telegram HTML", async () => {
+    const { markdownToTelegramHtml } = await import("@agentina-mesh/channels")
+    const md = "## Status\n**Done:** the `brief.txt` review\n- item one\n- item *two*\n```js\nconst x = 1\n```"
+    const html = markdownToTelegramHtml(md)
+    expect(html).toContain("<b>Status</b>")
+    expect(html).toContain("<b>Done:</b>")
+    expect(html).toContain("<code>brief.txt</code>")
+    expect(html).toContain("• item one")
+    expect(html).toContain("<i>two</i>")
+    expect(html).toContain("<pre><code>")
+    expect(html).not.toContain("**")
+  })
+
+  it("escapes HTML in content and keeps links intact", async () => {
+    const { markdownToTelegramHtml } = await import("@agentina-mesh/channels")
+    const html = markdownToTelegramHtml("a < b & [docs](https://x.dev/a?b=1&c=2)")
+    expect(html).toContain("a &lt; b &amp;")
+    expect(html).toContain('<a href="https://x.dev/a?b=1&amp;c=2">docs</a>')
+  })
+
+  it("splits long replies at natural boundaries under the cap", async () => {
+    const { splitMessageText } = await import("@agentina-mesh/channels")
+    const long = ("A sentence that goes on. ".repeat(400)).trim()
+    const chunks = splitMessageText(long, 3900)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(3900)
+    expect(chunks.join(" ").replace(/\s+/g, " ")).toBe(long.replace(/\s+/g, " "))
+  })
+})

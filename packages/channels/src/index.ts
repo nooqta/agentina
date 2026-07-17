@@ -1,6 +1,7 @@
 export type { ChannelAdapter, ChannelHost, InboundMessage } from "./types"
 export { ChannelRouter, type AttachOptions } from "./router"
-export { TelegramAdapter, type TelegramConfig } from "./telegram"
+export { TelegramAdapter, type TelegramConfig, splitMessageText } from "./telegram"
+export { markdownToTelegramHtml } from "./telegram-format"
 export { GitLabAdapter, type GitLabConfig } from "./gitlab"
 export { WhatsAppAdapter, type WhatsAppConfig } from "./whatsapp"
 export { GitHubAdapter, type GitHubConfig } from "./github"

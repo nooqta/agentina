@@ -18,6 +18,11 @@ export interface AdapterTask {
   policy?: { grantId: string; scopes: import("@agentina-mesh/protocol").Scope[] }
   senderAgentId?: string
   context?: Record<string, unknown>
+  /** Skills this agent ADOPTED from other parties, already fetched live
+   *  and assembled (labeled "from <party>") by the node. Appended to the
+   *  prompt after the agent's own skills; empty when nothing is adopted
+   *  or the owner revoked. */
+  remoteSkillsText?: string
 }
 
 export interface AgentAdapter {
@@ -26,6 +31,7 @@ export interface AgentAdapter {
 
 export class EchoAdapter implements AgentAdapter {
   async execute(offer: AgentOffer, task: AdapterTask): Promise<{ content: string }> {
-    return { content: `echo from ${offer.name}: ${task.message}` }
+    const extra = task.remoteSkillsText ? `\n${task.remoteSkillsText}` : ""
+    return { content: `echo from ${offer.name}: ${task.message}${extra}` }
   }
 }
