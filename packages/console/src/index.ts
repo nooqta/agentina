@@ -374,7 +374,7 @@ export const CONSOLE_HTML = `<!doctype html>
   function goHome() { S.screen = peers().length ? "home" : "onboarding"; S.stack = []; render(); }
   function back() {
     if (cur() === "share" && S.share.step && S.share.step !== "done") {
-      var order = ["kind", "what", "access", "duration", "confirm"];
+      var order = S.share.kind === "skill" ? ["kind", "what", "duration", "confirm"] : ["kind", "what", "access", "duration", "confirm"];
       var i = order.indexOf(S.share.step);
       if (i > 0) { S.share.step = order[i - 1]; render(); return; }
     }
@@ -950,7 +950,8 @@ export const CONSOLE_HTML = `<!doctype html>
     folder: { glyph: "F", fg: BLUE, bg: BLUE_BG, label: "A folder", desc: "Files they can use", title: "Which folder?", sub: "They see this folder — and never anything above it. Sneaky “..” paths fail, guaranteed.", ph: "/path/to/folder", mono: true },
     agent: { glyph: "AI", fg: GREEN_D, bg: GREEN_BG, label: "One of my agents", desc: "It answers their questions", title: "Which agent?", sub: "It answers their questions — inside its own folder only.", ph: "agent name", mono: false },
     server: { glyph: "SV", fg: AMBER, bg: AMBER_BG, label: "A server", desc: "Run commands, scoped", title: "Which server?", sub: "Commands run through the share — credentials never leave your machine.", ph: "user@host", mono: true },
-    repo: { glyph: "R", fg: RED, bg: RED_BG, label: "A repository", desc: "Browse code, no keys", title: "Which repository?", sub: "They can browse it through your machine — no deploy keys handed over.", ph: "https://… or git@…", mono: true }
+    repo: { glyph: "R", fg: RED, bg: RED_BG, label: "A repository", desc: "Browse code, no keys", title: "Which repository?", sub: "They can browse it through your machine — no deploy keys handed over.", ph: "https://… or git@…", mono: true },
+    skill: { glyph: "SK", fg: GREEN_D, bg: GREEN_BG, label: "A skill", desc: "Know-how their agent uses", title: "Which skill?", sub: "Their agent reads it live, on your machine — edit or revoke it anytime, and every use is logged.", ph: "agent:skill.md", mono: true }
   };
   var DURATIONS = [
     { key: 3600, glyph: "1h", label: "1 hour", desc: "Quick help — gone before dinner" },
@@ -980,7 +981,7 @@ export const CONSOLE_HTML = `<!doctype html>
       d.appendChild(E("div", "title2", "What do you want to share with " + esc(c.name) + "?"));
       d.appendChild(E("div", "sub2", "Exactly this, nothing else — and you can stop it anytime."));
       var grid = css(E("div"), { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" });
-      ["folder", "agent", "server", "repo"].forEach(function (k) {
+      ["folder", "agent", "server", "repo", "skill"].forEach(function (k) {
         var m = SHARE_KINDS[k];
         var b = B("card", "", function () {
           st.kind = k; st.value = ""; st.step = "what"; render();
@@ -1018,7 +1019,9 @@ export const CONSOLE_HTML = `<!doctype html>
       var next = B("btn btn-blue", "Continue", function () {
         if (!(st.value || "").trim()) { toast("Pick or type something first"); return; }
         st.value = st.value.trim();
-        st.step = "access"; render();
+        // A skill is read-only reference — skip the access step.
+        if (st.kind === "skill") { st.mode = "ro"; st.step = "duration"; } else { st.step = "access"; }
+        render();
       });
       css(next, { marginTop: "28px" });
       input.onkeydown = function (e) { if (e.key === "Enter") next.click(); };
@@ -1110,6 +1113,10 @@ export const CONSOLE_HTML = `<!doctype html>
       picks = myAgents().map(function (a) { return { label: a.id, value: a.id }; });
     } else if (st.kind === "folder") {
       picks = (S.quickPicks || []).map(function (q) { return { label: q.label, value: q.path }; });
+    } else if (st.kind === "skill") {
+      myAgents().forEach(function (a) {
+        (a.skillFiles || []).forEach(function (f) { picks.push({ label: a.id + " · " + f, value: a.id + ":" + f }); });
+      });
     }
     picks.slice(0, 6).forEach(function (p) {
       container.appendChild(B("sug", esc(p.label), function () {
