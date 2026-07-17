@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { randomBytes } from "node:crypto"
 import type { Party, PartyKind, AgentOffer, Credential, Grant, CollabSession } from "@agentina-mesh/protocol"
 import type { PeerRef } from "@agentina-mesh/peer"
+import { generateKeypair } from "@agentina-mesh/grants"
 
 // --- Node state: one JSON file per node ---
 //
@@ -61,6 +62,9 @@ export interface ChannelBinding {
 
 export interface NodeStateShape {
   party: Party
+  /** Curve25519 secret key (base64) for E2E sealed boxes — the private
+   *  half of party.publicKey. Never advertised, never leaves this file. */
+  secretKey?: string
   /** Advertised URL peers use to reach this node. */
   url: string
   /** Listener interface, persisted when set from the console so a
@@ -106,6 +110,14 @@ export class NodeState {
       if (init.urlIsExplicit || !this.data.url) this.data.url = init.url
       this.data.grants ??= [] // pre-M1 state files
       this.data.sessions ??= [] // pre-M3 state files
+      // Pre-keypair state files: mint an identity keypair on first load
+      // so every existing party gains E2E without re-pairing.
+      if (!this.data.secretKey || !this.data.party.publicKey) {
+        const kp = generateKeypair()
+        this.data.secretKey = kp.secretKey
+        this.data.party.publicKey = kp.publicKey
+        this.save()
+      }
       // One-connection-per-kind configs become bindings (no agent —
       // they were the party-wide bots).
       if (this.data.channels && !this.data.channelBindings) {
@@ -119,12 +131,14 @@ export class NodeState {
       }
       this.data.channelBindings ??= []
     } else {
-      const party: Party = { id: newId("pt"), name: init.partyName, kind: init.partyKind ?? "person" }
+      const kp = generateKeypair()
+      const party: Party = { id: newId("pt"), name: init.partyName, kind: init.partyKind ?? "person", publicKey: kp.publicKey }
       // No default agents: connectivity is proven by /ping, and a stub
       // that answers "echo: …" reads as broken to real users. Agents
       // appear when the owner creates or shares something.
       this.data = {
         party,
+        secretKey: kp.secretKey,
         url: init.url,
         agents: [],
         peers: [],

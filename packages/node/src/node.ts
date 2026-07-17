@@ -337,6 +337,7 @@ export class AgentinaNode {
       url: this.state.data.url,
       inviteToken: token,
       partyName: this.party.name,
+      publicKey: this.party.publicKey,
       protocol: PROTOCOL_VERSION,
     }
     return encodeInvite(payload)
@@ -375,6 +376,7 @@ export class AgentinaNode {
       url: payload.url,
       token: reply.accessToken,
       partyId: reply.party.id,
+      publicKey: reply.party.publicKey ?? payload.publicKey,
     })
     this.audit.append({ kind: "pair", decision: "allowed", partyId: reply.party.id, detail: `joined ${reply.party.name} at ${payload.url}` })
     return { party: reply.party, url: payload.url }
@@ -1557,7 +1559,7 @@ export class AgentinaNode {
       // Token WE present when calling the invitee — they minted it for us.
       outboundToken: body.accessToken,
     })
-    this.upsertPeer({ name: body.party.name, url: body.url, token: body.accessToken, partyId: body.party.id })
+    this.upsertPeer({ name: body.party.name, url: body.url, token: body.accessToken, partyId: body.party.id, publicKey: body.party.publicKey })
     this.audit.append({ kind: "pair", decision: "allowed", partyId: body.party.id, detail: `paired with ${body.party.name} at ${body.url}` })
 
     const reply: PairCompleteResponse = {

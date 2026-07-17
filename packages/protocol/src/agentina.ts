@@ -23,6 +23,9 @@ export interface Party {
   id: string
   name: string
   kind: PartyKind
+  /** Curve25519 public key (base64) for end-to-end sealed boxes on the
+   *  peer link. Advertised; the secret half never leaves the node. */
+  publicKey?: string
 }
 
 /** How a counterparty authenticates. MVP is a bearer pair — two
@@ -146,6 +149,9 @@ export interface InvitePayload {
   /** One-time redemption token, consumed by /pair/complete. */
   inviteToken: string
   partyName: string
+  /** Inviter's Curve25519 public key, so the invitee can seal the
+   *  pair-complete call and every call after it. */
+  publicKey?: string
   protocol: typeof PROTOCOL_VERSION
 }
 

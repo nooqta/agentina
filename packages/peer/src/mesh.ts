@@ -17,6 +17,9 @@ export interface PeerRef {
   token?: string
   /** Party that owns the peer node (agentina pairing sets this). */
   partyId?: string
+  /** Peer's Curve25519 public key (base64) — set at pairing, used to
+   *  seal the E2E box on every call to them. */
+  publicKey?: string
 }
 
 export interface MeshConfig {
