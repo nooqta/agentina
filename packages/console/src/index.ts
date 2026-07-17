@@ -820,6 +820,12 @@ export const CONSOLE_HTML = `<!doctype html>
           css(ttl, { color: AMBER, background: AMBER_BG });
           row.appendChild(ttl);
         }
+        if (x.maxUses) {
+          var left = x.maxUses - (x.uses || 0);
+          var up = E("div", "pill", left > 0 ? left + " left" : "spent");
+          css(up, { color: left > 0 ? BLUE : RED, background: left > 0 ? BLUE_BG : RED_BG });
+          row.appendChild(up);
+        }
         var stop = B("", "Stop", function () {
           api("POST", "/shares/stop", { id: x.id }).then(function () {
             toast("Stopped — their next use is denied");
@@ -1253,12 +1259,27 @@ export const CONSOLE_HTML = `<!doctype html>
         "<div style='font-size:18px;font-weight:700;word-break:break-all'>" + esc(st.value) + "</div></div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>" + (st.mode === "rw" ? "RW" : "RO") + "</div>" + (st.mode === "rw" ? "Read &amp; write" : "Look only — they can never change anything") + "</div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>TTL</div>" + (st.duration ? "Self-destructs after " + durText(st.duration).replace("for ", "") : "Until you stop it") + "</div>" +
+        "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center'>USE</div>" + (st.maxUses ? st.maxUses + " uses, then it's spent" : "Unlimited uses") + "</div>" +
         "<div style='display:flex;align-items:center;gap:14px;font-size:16px;color:#5f6368'><div style='font-size:13px;font-weight:800;width:36px;text-align:center;color:" + RED + "'>STOP</div>You can stop it anytime, in one tap</div>";
       d.appendChild(box);
+
+      // Skills are live-referenced every turn, so a use cap doesn't fit
+      // them — offer it for agents/folders/servers/repos only.
+      if (st.kind !== "skill") {
+        d.appendChild(css(E("div", null, "Limit how many times?"), { fontSize: "14px", fontWeight: "700", color: "#9aa0a6", margin: "20px 0 10px" }));
+        var useRow = css(E("div", "chips"), {});
+        [{ l: "Unlimited", v: 0 }, { l: "5 uses", v: 5 }, { l: "20 uses", v: 20 }, { l: "50 uses", v: 50 }].forEach(function (o) {
+          var sel = (st.maxUses || 0) === o.v;
+          useRow.appendChild(B("chip-sm" + (sel ? " sel" : ""), esc(o.l), function () { st.maxUses = o.v || undefined; render(); }));
+        });
+        d.appendChild(useRow);
+      }
+
       var goBtn = B("btn btn-green", "Share it", function () {
         goBtn.disabled = true;
         var body = { peer: c.name, kind: st.kind, value: st.value, mode: st.mode };
         if (st.duration) body.durationSeconds = st.duration;
+        if (st.maxUses) body.maxUses = st.maxUses;
         api("POST", "/shares", body).then(function () {
           st.step = "done";
           loadPeer(c.name, false);

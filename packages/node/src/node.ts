@@ -505,8 +505,11 @@ export class AgentinaNode {
     path?: string
     mode?: "ro" | "rw"
     durationSeconds?: number
+    /** Optional usage cap — the grant is spent after this many uses. */
+    maxUses?: number
   }): { id: string; agentId: string; expiresAt?: string } {
     const mode = opts.mode ?? "ro"
+    const limits = opts.maxUses && opts.maxUses > 0 ? { maxUses: opts.maxUses } : undefined
 
     // Sharing a SKILL: the grant carries a skill scope and no agentIds,
     // so the counterparty may fetch this one skill's text (live, per
@@ -538,7 +541,7 @@ export class AgentinaNode {
       const expiresAt = opts.durationSeconds
         ? new Date(Date.now() + opts.durationSeconds * 1000).toISOString()
         : undefined
-      const grant = this.grantAccess(opts.peer, [offer.id], scopes, expiresAt)
+      const grant = this.grantAccess(opts.peer, [offer.id], scopes, expiresAt, limits)
       return { id: grant.id, agentId: offer.id, expiresAt }
     }
 
@@ -577,7 +580,7 @@ export class AgentinaNode {
       lifecycle: "persistent",
       adapter,
     })
-    const grant = this.grantAccess(opts.peer, [agentId], [scope])
+    const grant = this.grantAccess(opts.peer, [agentId], [scope], undefined, limits)
     return { id: grant.id, agentId }
   }
 
@@ -616,6 +619,8 @@ export class AgentinaNode {
           mode: sc && "mode" in sc ? sc.mode : undefined,
           status: session ? session.status : g.status,
           expiresAt: g.expiresAt,
+          maxUses: g.limits?.maxUses,
+          uses: g.uses ?? 0,
           temporary: Boolean(session),
         }
       })
@@ -642,10 +647,10 @@ export class AgentinaNode {
 
   /** Owner-authored grant to a paired party (active immediately).
    *  `toParty` accepts a party id or a peer name. */
-  grantAccess(toParty: string, agentIds: string[], scopes: Scope[], expiresAt?: string) {
+  grantAccess(toParty: string, agentIds: string[], scopes: Scope[], expiresAt?: string, limits?: { maxUses?: number }) {
     const partyId = this.resolvePartyId(toParty)
     if (!partyId) throw new Error(`Unknown party or peer: ${toParty}`)
-    const grant = this.grants.create({ fromParty: this.party.id, toParty: partyId, agentIds, scopes, expiresAt })
+    const grant = this.grants.create({ fromParty: this.party.id, toParty: partyId, agentIds, scopes, expiresAt, limits })
     this.audit.append({ kind: "grant-create", decision: "allowed", partyId, grantId: grant.id, scopes, detail: `agents: ${agentIds.join(", ")}` })
     return grant
   }
@@ -884,6 +889,12 @@ export class AgentinaNode {
             this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, reason: decision.reason })
             return this.json(res, 403, { error: `Forbidden: ${decision.reason} — ask ${this.party.name} to grant access to agent "${offer.id}"` })
           }
+          // Usage cap — a granular limit on top of the scope jail: the
+          // grant is spent after maxUses invocations.
+          if (!this.grants.canUse(decision.grant.id)) {
+            this.audit.append({ kind: "task", decision: "denied", partyId: callerParty, agentId: offer.id, grantId: decision.grant.id, reason: "use-limit-reached" })
+            return this.json(res, 403, { error: `Forbidden: this share has reached its use limit — ask ${this.party.name} to renew it` })
+          }
           policy = { grantId: decision.grant.id, scopes: decision.grant.scopes }
         }
 
@@ -895,6 +906,9 @@ export class AgentinaNode {
             senderAgentId: body.senderAgentId ? String(body.senderAgentId) : undefined,
             context: (body.context as Record<string, unknown>) ?? undefined,
           })
+          // Count this successful invocation against the grant's use cap
+          // (no-op when the grant has no maxUses).
+          if (policy) this.grants.recordUse(policy.grantId)
           this.audit.append({
             kind: "task", decision: "allowed", partyId: callerParty, agentId: offer.id,
             grantId: policy?.grantId, scopes: policy?.scopes,
@@ -967,6 +981,7 @@ export class AgentinaNode {
           path: body.path ? String(body.path) : undefined,
           mode: body.mode === "rw" ? "rw" : "ro",
           durationSeconds: body.durationSeconds ? Number(body.durationSeconds) : undefined,
+          maxUses: body.maxUses ? Number(body.maxUses) : undefined,
         })
         return this.json(res, 201, share)
       }

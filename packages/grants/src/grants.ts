@@ -24,7 +24,7 @@ export class GrantStore {
   }
 
   /** Owner-authored grant — active immediately. */
-  create(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string }): Grant {
+  create(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string; limits?: { maxUses?: number } }): Grant {
     const grant: Grant = {
       id: newGrantId(),
       status: "active",
@@ -36,8 +36,27 @@ export class GrantStore {
     return grant
   }
 
+  /** Peek: is this grant still within its usage cap? True when there is
+   *  no cap. Denials for scope/quota are separate from expiry (activeFor
+   *  already drops expired/revoked grants). */
+  canUse(id: string): boolean {
+    const g = this.byId.get(id)
+    if (!g) return false
+    const max = g.limits?.maxUses
+    if (max == null) return true
+    return (g.uses ?? 0) < max
+  }
+
+  /** Count one successful use against the cap (persists via emit). */
+  recordUse(id: string): void {
+    const g = this.byId.get(id)
+    if (!g) return
+    g.uses = (g.uses ?? 0) + 1
+    this.emit()
+  }
+
   /** Counterparty-requested grant — waits for owner approval. */
-  propose(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string }): Grant {
+  propose(input: { fromParty: string; toParty: string; agentIds: string[]; scopes: Scope[]; expiresAt?: string; limits?: { maxUses?: number } }): Grant {
     const grant: Grant = {
       id: newGrantId(),
       status: "proposed",

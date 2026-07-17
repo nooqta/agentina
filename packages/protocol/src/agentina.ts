@@ -61,6 +61,12 @@ export interface Grant {
   agentIds: string[]
   scopes: Scope[]
   expiresAt?: string
+  /** Optional usage cap — the total number of invocations this grant
+   *  permits before it's spent. Composes with expiresAt: a share can be
+   *  both time-boxed and use-boxed. */
+  limits?: { maxUses?: number }
+  /** Invocations recorded against the cap so far. */
+  uses?: number
   status: "proposed" | "active" | "revoked"
   createdAt: string
 }
