@@ -1645,10 +1645,15 @@ export const CONSOLE_HTML = `<!doctype html>
       return "Your " + agent + " was used here" + (detail ? " — " + detail : "");
     }
     if (kind === "grant-create") {
-      if (e.reason === "proposed") return (who || "Someone") + " asked for access — approve it from your side or ignore it";
+      if (e.reason === "proposed") return (who || "Someone") + " asked for access — approve or decline it on their contact screen";
+      if (e.reason === "requested") return "You asked " + (who || "a contact") + " for access" + (detail ? " — " + detail : "");
+      if (e.reason === "approved") return "You approved " + (who || "a contact") + "’s access request";
       return "You shared with " + (who || "a contact") + (detail ? " — " + detail : "");
     }
-    if (kind === "grant-revoke") return "You stopped sharing with " + (who || "a contact");
+    if (kind === "grant-revoke") {
+      if (e.reason === "denied") return "You declined " + (who || "a contact") + "’s access request";
+      return "You stopped sharing with " + (who || "a contact");
+    }
     if (kind === "session-open") return "You shared something temporary with " + (who || "a contact") + " — it self-destructs";
     if (kind === "session-close") return "A temporary share ended" + (detail ? " (" + detail + ")" : "");
     if (kind === "auth-denied") return "Blocked: a request that isn't from one of your people";

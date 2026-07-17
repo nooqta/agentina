@@ -1412,10 +1412,58 @@ export class AgentinaNode {
       case "POST /agentina/v1/grants/approve": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
         const body = await this.readBody(req)
-        const approved = this.grants.approve(String(body.id ?? ""))
-        if (!approved) return this.json(res, 404, { error: "No proposed grant with that id" })
-        this.audit.append({ kind: "grant-create", decision: "allowed", partyId: approved.toParty, grantId: approved.id, reason: "approved", scopes: approved.scopes })
+        const id = String(body.id ?? "")
+        const pending = this.grants.get(id)
+        if (!pending || pending.status !== "proposed") return this.json(res, 404, { error: "No pending request with that id" })
+        // A request for one of my agents arrives with no fs scope (the
+        // asker can't know my paths). Attach the agent's own workspace,
+        // read-only, so the approved agent is actually usable — the owner
+        // can tighten it later. Skill requests already carry their scope.
+        for (const agentId of pending.agentIds) {
+          const root = this.state.data.agents.find((a) => a.id === agentId)?.adapter?.baseRoot
+          if (root && !pending.scopes.some((s) => s.kind === "fs")) pending.scopes.push({ kind: "fs", root, mode: "ro" })
+        }
+        const approved = this.grants.approve(id) // emits → persists the filled scopes
+        this.audit.append({ kind: "grant-create", decision: "allowed", partyId: approved!.toParty, grantId: approved!.id, reason: "approved", scopes: approved!.scopes })
         return this.json(res, 200, approved)
+      }
+      // Decline a pending access request.
+      case "POST /agentina/v1/grants/deny": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const id = String(body.id ?? "")
+        const grant = this.grants.get(id)
+        if (!grant || grant.status !== "proposed") return this.json(res, 404, { error: "No pending request with that id" })
+        this.grants.revoke(id)
+        this.audit.append({ kind: "grant-revoke", decision: "allowed", partyId: grant.toParty, grantId: id, reason: "denied" })
+        return this.json(res, 200, { denied: id })
+      }
+      // Ask a contact to share one of THEIR agents or skills with you —
+      // it lands on their side as a pending request they approve or deny.
+      case "POST /agentina/v1/grants/request": {
+        if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
+        const body = await this.readBody(req)
+        const peer = this.state.data.peers.find((p) => p.name === String(body.peer ?? ""))
+        if (!peer) return this.json(res, 404, { error: `Unknown peer: ${body.peer}` })
+        const kind = String(body.kind ?? ""), value = String(body.value ?? "")
+        let payload: { agentIds: string[]; scopes: Scope[] }
+        if (kind === "agent") payload = { agentIds: [value], scopes: [] }
+        else if (kind === "skill") payload = { agentIds: [], scopes: [{ kind: "skill", skillId: value }] }
+        else return this.json(res, 400, { error: "Request kind must be agent or skill" })
+        try {
+          const r = await fetch(`${peer.url}/agentina/v1/grants`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(peer.token ? { Authorization: `Bearer ${peer.token}` } : {}) },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+          })
+          if (!r.ok) return this.json(res, r.status, { error: `${peer.name} rejected the request (${r.status})` })
+          const proposed = await r.json()
+          this.audit.append({ kind: "grant-create", decision: "allowed", partyId: peer.partyId, reason: "requested", detail: `${kind}:${value}` })
+          return this.json(res, 202, { requested: proposed })
+        } catch (e: any) {
+          return this.json(res, 502, { error: `Could not reach ${peer.name}: ${e.message}` })
+        }
       }
       case "POST /agentina/v1/grants/revoke": {
         if (callerParty !== "local") return this.json(res, 403, { error: "control endpoints are local-only" })
