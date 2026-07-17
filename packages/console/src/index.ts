@@ -277,6 +277,25 @@ export const CONSOLE_HTML = `<!doctype html>
       .filter(function (a) { return granted[a.id] && a.id !== "echo"; })
       .map(function (a) { return { id: a.id, tags: a.tags || [], grant: granted[a.id] }; });
   }
+  function contactPartyId(name) {
+    var p = peers().filter(function (x) { return x.peer === name; })[0];
+    return p && p.partyId;
+  }
+  // Pending access requests FROM a contact (proposed grants to them).
+  function pendingFrom(name) {
+    var pid = contactPartyId(name);
+    return ((S.status && S.status.grants) || []).filter(function (g) { return g.status === "proposed" && g.toParty === pid; });
+  }
+  function pendingTotal() {
+    return ((S.status && S.status.grants) || []).filter(function (g) { return g.status === "proposed"; }).length;
+  }
+  function describeWant(g) {
+    if (g.agentIds && g.agentIds.length) return "the agent “" + g.agentIds.join(", ") + "”";
+    var sc = (g.scopes || [])[0];
+    if (sc && sc.kind === "skill") return "the skill “" + sc.skillId + "”";
+    if (sc && sc.kind === "fs") return "the folder " + sc.root;
+    return "access";
+  }
   // Skills a contact currently shares with ME — skill scopes on the
   // grants they've extended (empty agentIds, so grantedAgents skips them).
   function grantedSkills(name) {
@@ -620,6 +639,12 @@ export const CONSOLE_HTML = `<!doctype html>
       css(st, { display: "flex", alignItems: "center", gap: "6px", fontSize: "14.5px", color: "#5f6368", marginTop: "2px" });
       mid.appendChild(st);
       card.appendChild(mid);
+      var asks = pendingFrom(p.peer).length;
+      if (asks) {
+        var badge = E("div", "pill", asks + (asks > 1 ? " asks" : " ask"));
+        css(badge, { color: "#ffffff", background: RED, fontWeight: "700", fontSize: "12.5px" });
+        card.appendChild(badge);
+      }
       card.appendChild(E("div", "chev", "›"));
       list.appendChild(card);
     });
@@ -741,6 +766,39 @@ export const CONSOLE_HTML = `<!doctype html>
     stack.appendChild(act);
     d.appendChild(stack);
 
+    // Access requests from this contact — approve or decline.
+    var pend = pendingFrom(c.name);
+    if (pend.length) {
+      var ebR = E("div", "eyebrow", esc(c.name) + " is asking you for access");
+      css(ebR, { margin: "28px 0 12px" });
+      d.appendChild(ebR);
+      var rlist = E("div", "stack-sm");
+      pend.forEach(function (g) {
+        var row = E("div", "rowcard");
+        css(row, { border: "2px solid #FFE08A", background: "#FFFBF0" });
+        var mid = css(E("div"), { flex: "1", minWidth: "0" });
+        mid.appendChild(css(E("div", null, "Wants " + esc(describeWant(g))), { fontSize: "15px", fontWeight: "700" }));
+        mid.appendChild(css(E("div", null, "Nothing is shared until you approve"), { fontSize: "13px", color: "#5f6368", marginTop: "2px" }));
+        row.appendChild(mid);
+        var no = B("", "Decline", function () {
+          api("POST", "/grants/deny", { id: g.id }).then(function () { toast("Declined"); refresh(); })["catch"](function (e) { toast(e.message); });
+        });
+        css(no, { border: "2px solid #F9C1C1", borderRadius: "12px", background: "#ffffff", color: RED, fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 14px", flex: "none" });
+        row.appendChild(no);
+        var yes = B("", "Approve", function () {
+          api("POST", "/grants/approve", { id: g.id }).then(function () { toast("Approved — they can use it now"); refresh(); })["catch"](function (e) { toast(e.message); });
+        });
+        css(yes, { border: "none", borderRadius: "12px", background: GREEN, color: "#ffffff", fontSize: "13.5px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", flex: "none", boxShadow: "0 3px 0 " + GREEN_D });
+        row.appendChild(yes);
+        rlist.appendChild(row);
+      });
+      d.appendChild(rlist);
+    }
+
+    var reqLink = B("linkbtn", "Request access from " + esc(c.name) + " →", function () { go("requestAccess"); });
+    css(reqLink, { alignSelf: "flex-start", padding: "0", marginTop: "14px" });
+    d.appendChild(reqLink);
+
     var mine = (S.shares[c.name] || []).filter(function (x) { return x.status === "active"; });
     if (mine.length) {
       var eb = E("div", "eyebrow", "You share with " + esc(c.name));
@@ -835,6 +893,52 @@ export const CONSOLE_HTML = `<!doctype html>
         "<div style='flex:1'><div style='font-size:16px;font-weight:700'>" + esc(a.id) + "</div></div>" +
         "<div class='chev'>›</div>";
       list.appendChild(b);
+    });
+    d.appendChild(list);
+    return d;
+  };
+
+  SCREENS.requestAccess = function () {
+    var d = screenRoot("requestAccess");
+    var head = E("div", "hdr");
+    head.appendChild(B("btn-back", "←", back));
+    d.appendChild(head);
+    var name = S.contact;
+    d.appendChild(E("div", "title2", "Request access from " + esc(name)));
+    d.appendChild(E("div", "sub2", "Ask for one of their agents or skills — it lands on their side to approve or decline. Nothing is shared until they say yes."));
+    var info = S.peerInfo[name] || {};
+    var have = {};
+    grantedAgents(name).forEach(function (a) { have[a.id] = 1; });
+    grantedSkills(name).forEach(function (s) { have[s.skillId] = 1; });
+    pendingFrom(name).forEach(function (g) { (g.agentIds || []).forEach(function (id) { have[id] = 1; }); (g.scopes || []).forEach(function (s) { if (s.kind === "skill") have[s.skillId] = 1; }); });
+    var items = (info.agents || []).filter(function (o) { return o.id !== "echo" && !have[o.id]; });
+    if (!items.length) {
+      var blank = E("div", null, "Nothing new to request — you already have (or asked for) everything " + esc(name) + " advertises.");
+      css(blank, { fontSize: "14.5px", color: "#9aa0a6", background: "#ffffff", border: "2px dashed #e8eaed", borderRadius: "16px", padding: "16px 18px", textAlign: "center", lineHeight: "1.5" });
+      d.appendChild(blank);
+      return d;
+    }
+    var list = E("div", "stack-sm");
+    items.forEach(function (o) {
+      var isSkill = (o.tags || []).indexOf("skill") >= 0;
+      var row = E("div", "rowcard");
+      var gl = E("div", "glyph", isSkill ? "SK" : "AI");
+      css(gl, { width: "40px", height: "40px", borderRadius: "12px", background: GREEN_BG, color: GREEN_D, fontSize: "14px" });
+      row.appendChild(gl);
+      var mid = css(E("div"), { flex: "1", minWidth: "0" });
+      mid.appendChild(css(E("div", isSkill ? "mono" : null, esc(o.id)), { fontSize: "14.5px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }));
+      mid.appendChild(css(E("div", null, isSkill ? "A skill" : "An agent"), { fontSize: "13px", color: "#5f6368" }));
+      row.appendChild(mid);
+      var req = B("", "Request", function () {
+        req.disabled = true;
+        api("POST", "/grants/request", { peer: name, kind: isSkill ? "skill" : "agent", value: o.id }).then(function () {
+          toast("Requested — " + name + " will see it");
+          back();
+        })["catch"](function (e) { req.disabled = false; toast(e.message); });
+      });
+      css(req, { border: "none", borderRadius: "12px", background: BLUE, color: "#ffffff", fontSize: "14px", fontWeight: "700", cursor: "pointer", padding: "8px 16px", flex: "none", boxShadow: "0 3px 0 " + BLUE_D });
+      row.appendChild(req);
+      list.appendChild(row);
     });
     d.appendChild(list);
     return d;
